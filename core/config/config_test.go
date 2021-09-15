@@ -6,7 +6,7 @@ import (
 )
 
 func TestNewConfig(t *testing.T) {
-	var c Config
+	var c *Config
 	c, _ = NewConfig(nil)
 
 	toSet := "sprinkles"
@@ -16,7 +16,7 @@ func TestNewConfig(t *testing.T) {
 		t.Errorf("Environment variables not set - expected %s but was %s", toSet, c.GetString("cupcake"))
 	}
 
-	confDir := "../conf"
+	confDir := "../../conf"
 	c, _ = NewConfig(&confDir)
 	if !c.IsSet("queue.namespace") || c.GetString("queue.namespace") != "dev-flotilla" {
 		t.Errorf(

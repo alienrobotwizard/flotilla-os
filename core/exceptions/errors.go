@@ -1,5 +1,7 @@
 package exceptions
 
+import "github.com/pkg/errors"
+
 //
 // MalformedInput describes malformed or otherwise incorrect input
 //
@@ -34,3 +36,8 @@ type MissingResource struct {
 func (e MissingResource) Error() string {
 	return e.ErrorString
 }
+
+var (
+	ErrRecordNotFound = errors.New("record not found")
+	ErrRetryable      = errors.New("retryable error")
+)
