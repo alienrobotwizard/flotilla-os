@@ -6,6 +6,7 @@ import (
 	"github.com/alienrobotwizard/flotilla-os/core/app/services"
 	"github.com/alienrobotwizard/flotilla-os/core/config"
 	"github.com/alienrobotwizard/flotilla-os/core/execution/engines"
+	"github.com/alienrobotwizard/flotilla-os/core/execution/engines/local"
 	"github.com/alienrobotwizard/flotilla-os/core/execution/workers"
 	"github.com/alienrobotwizard/flotilla-os/core/state"
 	"github.com/pkg/errors"
@@ -30,7 +31,7 @@ type App struct {
 	appShutdown        context.CancelFunc
 }
 
-func NewApp(c *config.Config, sm state.Manager, engine engines.Engine) (App, error) {
+func NewApp(c *config.Config, extraEngines ...engines.Engine) (App, error) {
 	var (
 		app App
 		es  services.ExecutionService
@@ -40,18 +41,27 @@ func NewApp(c *config.Config, sm state.Manager, engine engines.Engine) (App, err
 	)
 
 	app.appContext, app.appShutdown = context.WithCancel(context.Background())
-
-	if err = sm.Initialize(c); err != nil {
+	sm, err := state.NewSQLManager(app.appContext, c)
+	if err != nil {
 		return app, err
 	}
 
-	if err = engine.Initialize(app.appContext, c, sm); err != nil {
+	engine, err := local.NewLocalEngine(app.appContext, c)
+	if err != nil {
 		return app, err
 	}
 
 	app.configure(c)
 
-	if es, err = services.NewExecutionService(c, sm, engine); err != nil {
+	engineMap := map[string]engines.Engine{
+		engine.Name(): engine,
+	}
+
+	for _, otherEngine := range extraEngines {
+		engineMap[otherEngine.Name()] = engine
+	}
+
+	if es, err = services.NewExecutionService(c, sm, engineMap); err != nil {
 		return app, errors.Wrap(err, "problem initializing execution service")
 	}
 
@@ -60,7 +70,7 @@ func NewApp(c *config.Config, sm state.Manager, engine engines.Engine) (App, err
 	}
 
 	app.handler = Initialize(ts, es)
-	if wm, err = workers.NewManager(c, sm, map[string]engines.Engine{"local": engine}); err != nil {
+	if wm, err = workers.NewManager(c, sm, engineMap); err != nil {
 		return app, errors.Wrap(err, "problem initializing worker manager")
 	}
 

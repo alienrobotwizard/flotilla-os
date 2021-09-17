@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"github.com/alienrobotwizard/flotilla-os/core/config"
@@ -26,35 +27,36 @@ var likeFields = map[string]bool{
 	"exit_reason": true,
 }
 
-func (m *SQLManager) Initialize(c *config.Config) error {
+func NewSQLManager(ctx context.Context, c *config.Config) (Manager, error) {
 	dbURL := c.GetString("database_url")
 	db, err := gorm.Open(postgres.Open(dbURL), &gorm.Config{})
 	if err != nil {
-		return errors.Wrap(err, "Unable to open database")
-	}
-	m.db = db
-
-	// Automigrate for now
-	if err := db.AutoMigrate(&models.Run{}, &models.Template{}, &models.Worker{}); err != nil {
-		return errors.Wrap(err, "Unable to auto-migrate database")
+		return nil, errors.Wrap(err, "Unable to open database")
 	}
 
-	if err := m.initWorkerTable(c); err != nil {
-		return err
+	if err := db.WithContext(ctx).AutoMigrate(&models.Run{}, &models.Template{}, &models.Worker{}); err != nil {
+		return nil, errors.Wrap(err, "Unable to auto-migrate database")
 	}
 
-	return nil
+	if err := initWorkerTable(ctx, c, db); err != nil {
+		return nil, err
+	}
+
+	go func(ctx context.Context, db *gorm.DB) {
+		select {
+		case <-ctx.Done():
+			if sqlDB, err := db.DB(); err == nil {
+				sqlDB.Close()
+			}
+		}
+	}(ctx, db)
+
+	return &SQLManager{
+		db: db,
+	}, nil
 }
 
-func (m *SQLManager) Cleanup() error {
-	if sqlDB, err := m.db.DB(); err != nil {
-		return err
-	} else {
-		return sqlDB.Close()
-	}
-}
-
-func (m *SQLManager) GetTemplate(args *GetTemplateArgs) (models.Template, error) {
+func (m *SQLManager) GetTemplate(ctx context.Context, args *GetTemplateArgs) (models.Template, error) {
 	var (
 		t    models.Template
 		vals []interface{}
@@ -72,7 +74,7 @@ func (m *SQLManager) GetTemplate(args *GetTemplateArgs) (models.Template, error)
 		}
 	}
 
-	if result := m.db.First(&t, vals...); result.Error != nil {
+	if result := m.db.WithContext(ctx).First(&t, vals...); result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return t, exceptions.ErrRecordNotFound
 		} else {
@@ -82,10 +84,10 @@ func (m *SQLManager) GetTemplate(args *GetTemplateArgs) (models.Template, error)
 	return t, nil
 }
 
-func (m *SQLManager) ListTemplates(args *ListArgs) (models.TemplateList, error) {
+func (m *SQLManager) ListTemplates(ctx context.Context, args *ListArgs) (models.TemplateList, error) {
 	var lr models.TemplateList
 
-	q := m.db.Model(&models.Template{})
+	q := m.db.WithContext(ctx).Model(&models.Template{})
 	q.Count(&lr.Total)
 
 	q = q.Limit(args.GetLimit()).Offset(args.GetOffset())
@@ -99,17 +101,17 @@ func (m *SQLManager) ListTemplates(args *ListArgs) (models.TemplateList, error) 
 	}
 }
 
-func (m *SQLManager) CreateTemplate(t models.Template) (models.Template, error) {
-	if result := m.db.Create(&t); result.Error != nil {
+func (m *SQLManager) CreateTemplate(ctx context.Context, t models.Template) (models.Template, error) {
+	if result := m.db.WithContext(ctx).Create(&t); result.Error != nil {
 		return t, result.Error
 	} else {
 		return t, nil
 	}
 }
 
-func (m *SQLManager) GetRun(runID string) (models.Run, error) {
+func (m *SQLManager) GetRun(ctx context.Context, runID string) (models.Run, error) {
 	var r models.Run
-	if result := m.db.First(&r, "run_id = ?", runID); result.Error != nil {
+	if result := m.db.WithContext(ctx).First(&r, "run_id = ?", runID); result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return r, exceptions.ErrRecordNotFound
 		} else {
@@ -119,17 +121,17 @@ func (m *SQLManager) GetRun(runID string) (models.Run, error) {
 	return r, nil
 }
 
-func (m *SQLManager) CreateRun(r models.Run) (models.Run, error) {
-	if result := m.db.Create(&r); result.Error != nil {
+func (m *SQLManager) CreateRun(ctx context.Context, r models.Run) (models.Run, error) {
+	if result := m.db.WithContext(ctx).Create(&r); result.Error != nil {
 		return r, result.Error
 	} else {
 		return r, nil
 	}
 }
 
-func (m *SQLManager) UpdateRun(runID string, updates models.Run) (models.Run, error) {
+func (m *SQLManager) UpdateRun(ctx context.Context, runID string, updates models.Run) (models.Run, error) {
 	var r models.Run
-	err := m.db.Transaction(func(tx *gorm.DB) error {
+	err := m.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		updates.RunID = runID
 		tx = tx.Clauses(clause.Locking{Strength: "UPDATE"})
 		tx = tx.First(&r, "run_id = ?", runID)
@@ -142,10 +144,10 @@ func (m *SQLManager) UpdateRun(runID string, updates models.Run) (models.Run, er
 	return r, err
 }
 
-func (m *SQLManager) ListRuns(args *ListRunsArgs) (models.RunList, error) {
+func (m *SQLManager) ListRuns(ctx context.Context, args *ListRunsArgs) (models.RunList, error) {
 	var lr models.RunList
 
-	q := m.db.Model(&models.Run{})
+	q := m.db.WithContext(ctx).Model(&models.Run{})
 	if args.Filters != nil {
 		q = m.applyFilters(q, args.Filters)
 	}
@@ -195,10 +197,10 @@ func (m *SQLManager) applyEnvFilters(q *gorm.DB, filters map[string]string) *gor
 	return q
 }
 
-func (m *SQLManager) ListWorkers(engine string) (models.WorkersList, error) {
+func (m *SQLManager) ListWorkers(ctx context.Context, engine string) (models.WorkersList, error) {
 	var lr models.WorkersList
 
-	q := m.db.Model(&models.Worker{}).Where("engine = ?", engine)
+	q := m.db.WithContext(ctx).Model(&models.Worker{}).Where("engine = ?", engine)
 	q.Count(&lr.Total)
 
 	if q = q.Find(&lr.Workers); q.Error != nil {
@@ -208,19 +210,19 @@ func (m *SQLManager) ListWorkers(engine string) (models.WorkersList, error) {
 	}
 }
 
-func (m *SQLManager) BatchUpdateWorkers(updates []models.Worker) (models.WorkersList, error) {
+func (m *SQLManager) BatchUpdateWorkers(ctx context.Context, updates []models.Worker) (models.WorkersList, error) {
 	var wl models.WorkersList
 	for _, w := range updates {
-		if _, err := m.UpdateWorker(models.WorkerType(w.WorkerType), w); err != nil {
+		if _, err := m.UpdateWorker(ctx, models.WorkerType(w.WorkerType), w); err != nil {
 			return wl, err
 		}
 	}
-	return m.ListWorkers(models.DefaultEngine)
+	return m.ListWorkers(ctx, models.DefaultEngine)
 }
 
-func (m *SQLManager) GetWorker(workerType models.WorkerType, engine string) (models.Worker, error) {
+func (m *SQLManager) GetWorker(ctx context.Context, workerType models.WorkerType, engine string) (models.Worker, error) {
 	var w models.Worker
-	if result := m.db.First(&w, "worker_type = ? AND engine = ?", workerType, engine); result.Error != nil {
+	if result := m.db.WithContext(ctx).First(&w, "worker_type = ? AND engine = ?", workerType, engine); result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return w, exceptions.ErrRecordNotFound
 		} else {
@@ -231,7 +233,7 @@ func (m *SQLManager) GetWorker(workerType models.WorkerType, engine string) (mod
 	return w, nil
 }
 
-func (m *SQLManager) UpdateWorker(workerType models.WorkerType, updates models.Worker) (models.Worker, error) {
+func (m *SQLManager) UpdateWorker(ctx context.Context, workerType models.WorkerType, updates models.Worker) (models.Worker, error) {
 	var (
 		err      error
 		existing models.Worker
@@ -242,7 +244,7 @@ func (m *SQLManager) UpdateWorker(workerType models.WorkerType, updates models.W
 		engine = updates.Engine
 	}
 
-	err = m.db.Transaction(func(tx *gorm.DB) error {
+	err = m.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		tx = tx.Clauses(clause.Locking{Strength: "UPDATE"})
 		tx = tx.First(&existing, "worker_type = ? AND engine = ?", workerType, engine)
 		if res := tx.Updates(updates); res.Error != nil {
@@ -253,7 +255,7 @@ func (m *SQLManager) UpdateWorker(workerType models.WorkerType, updates models.W
 	return existing, err
 }
 
-func (m *SQLManager) initWorkerTable(c *config.Config) error {
+func initWorkerTable(ctx context.Context, c *config.Config, db *gorm.DB) error {
 	// Get worker count from configuration (set to 1 as default)
 
 	for _, engine := range models.Engines {
@@ -278,7 +280,7 @@ func (m *SQLManager) initWorkerTable(c *config.Config) error {
 		INSERT INTO workers (worker_type, count_per_instance, engine)
 		VALUES ('retry', ?, @engine), ('submit', ?, @engine), ('status', ?, @engine) ON CONFLICT DO NOTHING;
 	`
-		err = m.db.Transaction(func(tx *gorm.DB) error {
+		err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			return tx.Exec(insert, retryCount, submitCount, statusCount, sql.Named("engine", engine)).Error
 		})
 

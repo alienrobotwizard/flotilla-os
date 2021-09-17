@@ -6,6 +6,7 @@ import (
 	"github.com/alienrobotwizard/flotilla-os/core/state"
 	"github.com/alienrobotwizard/flotilla-os/core/state/models"
 	"github.com/gin-gonic/gin"
+	"github.com/pkg/errors"
 	"net/http"
 	"strconv"
 )
@@ -18,47 +19,36 @@ func Initialize(
 	r.PUT("/template/:template_id/execute", func(c *gin.Context) {
 		var request services.ExecutionRequest
 		if err := c.BindJSON(&request); err != nil {
-			_ = c.AbortWithError(http.StatusBadRequest, err)
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		}
 
 		templateID := c.Param("template_id")
 		request.TemplateID = &templateID
-
-		if run, err := executionService.CreateTemplateRun(&request); err != nil {
-			_ = c.AbortWithError(http.StatusInternalServerError, err)
-		} else {
-			c.JSON(http.StatusCreated, run)
-		}
+		runTemplateOrAbort(c, executionService, &request)
 	})
 
 	r.PUT("/template/name/:template_name/version/:template_version/execute", func(c *gin.Context) {
 		var request services.ExecutionRequest
 		if err := c.BindJSON(&request); err != nil {
-			_ = c.AbortWithError(http.StatusBadRequest, err)
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		}
 
 		templateName, templateVersion := c.Param("template_name"), c.Param("template_version")
 		request.TemplateName = &templateName
 
-		if templateVersion, err := strconv.Atoi(templateVersion); err != nil {
-			_ = c.AbortWithError(http.StatusBadRequest, err)
-		} else {
-			templateVersion := int64(templateVersion)
-			request.TemplateVersion = &templateVersion
+		version, err := strconv.Atoi(templateVersion)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		}
-
-		if run, err := executionService.CreateTemplateRun(&request); err != nil {
-			_ = c.AbortWithError(http.StatusInternalServerError, err)
-		} else {
-			c.JSON(http.StatusCreated, run)
-		}
+		request.SetTemplateVersion(int64(version))
+		runTemplateOrAbort(c, executionService, &request)
 	})
 
 	r.GET("/template", func(c *gin.Context) {
 		var request state.ListArgs
 
 		if err := c.BindQuery(&request); err != nil {
-			_ = c.AbortWithError(http.StatusBadRequest, err)
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		}
 
 		for k, v := range c.Request.URL.Query() {
@@ -70,7 +60,7 @@ func Initialize(
 			}
 		}
 
-		if response, err := templateService.ListTemplates(&request); err != nil {
+		if response, err := templateService.ListTemplates(c, &request); err != nil {
 			_ = c.AbortWithError(http.StatusInternalServerError, err)
 		} else {
 			c.JSON(http.StatusOK, response)
@@ -80,40 +70,40 @@ func Initialize(
 	r.POST("/template", func(c *gin.Context) {
 		var template models.Template
 		if err := c.BindJSON(&template); err != nil {
-			_ = c.AbortWithError(http.StatusBadRequest, err)
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		}
 
-		if created, err := templateService.CreateTemplate(template); err != nil {
-			switch err.(type) {
-			case exceptions.MalformedInput:
-				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			default:
-				_ = c.AbortWithError(http.StatusInternalServerError, err)
-			}
-		} else {
-			c.JSON(http.StatusCreated, gin.H{
-				"created":  true,
-				"template": created,
-			})
+		created, isNew, err := templateService.CreateTemplate(c, template)
+		if err != nil {
+			abortNotFoundOrError(c, err)
 		}
+
+		code := http.StatusCreated
+		if !isNew {
+			code = http.StatusOK
+		}
+		c.JSON(code, gin.H{
+			"created":  isNew,
+			"template": created,
+		})
 	})
 
 	r.GET("/template/:template_id", func(c *gin.Context) {
 		templateID := c.Param("template_id")
-		if template, err := templateService.GetTemplate(&state.GetTemplateArgs{TemplateID: &templateID}); err != nil {
-			_ = c.AbortWithError(http.StatusInternalServerError, err)
-		} else {
-			c.JSON(http.StatusOK, template)
+		template, err := templateService.GetTemplate(c, &state.GetTemplateArgs{TemplateID: &templateID})
+		if err != nil {
+			abortNotFoundOrError(c, err)
 		}
+		c.JSON(http.StatusOK, template)
 	})
 
 	r.GET("/template/history/:run_id", func(c *gin.Context) {
 		runID := c.Param("run_id")
-		if run, err := executionService.GetRun(runID); err != nil {
-			_ = c.AbortWithError(http.StatusInternalServerError, err)
-		} else {
-			c.JSON(http.StatusOK, run)
+		run, err := executionService.GetRun(c, runID)
+		if err != nil {
+			abortNotFoundOrError(c, err)
 		}
+		c.JSON(http.StatusOK, run)
 	})
 
 	r.GET("/template/:template_id/history", func(c *gin.Context) {
@@ -122,7 +112,7 @@ func Initialize(
 		request.AddFilter("template_id", templateID)
 
 		if err := c.BindQuery(&request); err != nil {
-			_ = c.AbortWithError(http.StatusBadRequest, err)
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		}
 
 		for k, v := range c.Request.URL.Query() {
@@ -134,7 +124,7 @@ func Initialize(
 			}
 		}
 
-		if response, err := executionService.ListRuns(&request); err != nil {
+		if response, err := executionService.ListRuns(c, &request); err != nil {
 			_ = c.AbortWithError(http.StatusInternalServerError, err)
 		} else {
 			c.JSON(http.StatusOK, response)
@@ -143,21 +133,57 @@ func Initialize(
 
 	r.GET("/template/:template_id/history/:run_id", func(c *gin.Context) {
 		runID := c.Param("run_id")
-		if run, err := executionService.GetRun(runID); err != nil {
-			_ = c.AbortWithError(http.StatusInternalServerError, err)
-		} else {
-			c.JSON(http.StatusOK, run)
+		run, err := executionService.GetRun(c, runID)
+		if err != nil {
+			abortNotFoundOrError(c, err)
 		}
+		c.JSON(http.StatusOK, run)
 	})
 
 	r.DELETE("/template/:template_id/history/:run_id", func(c *gin.Context) {
 		runID := c.Param("run_id")
-		if err := executionService.Terminate(runID); err != nil {
-			_ = c.AbortWithError(http.StatusInternalServerError, err)
-		} else {
-			c.JSON(http.StatusOK, gin.H{"terminated": true})
+		if err := executionService.Terminate(c, runID); err != nil {
+			abortNotFoundOrError(c, err)
 		}
+		c.JSON(http.StatusOK, gin.H{"terminated": true})
+	})
+
+	r.GET("/:run_id/logs", func(c *gin.Context) {
+		var lastSeen *string
+
+		runID := c.Param("run_id")
+		if val, ok := c.GetQuery("last_seen"); ok {
+			lastSeen = &val
+		}
+
+		logLines, latest, err := executionService.Logs(c, runID, lastSeen)
+		if err != nil {
+			abortNotFoundOrError(c, err)
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"log":       logLines,
+			"last_seen": latest,
+		})
 	})
 
 	return d
+}
+
+func runTemplateOrAbort(c *gin.Context, service services.ExecutionService, request *services.ExecutionRequest) {
+	if run, err := service.CreateTemplateRun(c, request); err != nil {
+		if errors.Is(err, exceptions.ErrRecordNotFound) {
+			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		} else {
+			_ = c.AbortWithError(http.StatusInternalServerError, err)
+		}
+	} else {
+		c.JSON(http.StatusCreated, run)
+	}
+}
+
+func abortNotFoundOrError(c *gin.Context, err error) {
+	if errors.Is(err, exceptions.ErrRecordNotFound) {
+		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": err.Error()})
+	}
+	_ = c.AbortWithError(http.StatusInternalServerError, err)
 }

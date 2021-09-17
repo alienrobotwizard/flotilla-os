@@ -51,3 +51,11 @@ func mergeMapsRecursive(a *map[string]interface{}, b map[string]interface{}) err
 
 	return nil
 }
+
+func StringP(v string) *string {
+	return &v
+}
+
+func IntP(v int) *int {
+	return &v
+}

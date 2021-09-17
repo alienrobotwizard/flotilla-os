@@ -2,8 +2,10 @@ package services
 
 import (
 	"bytes"
+	"context"
 	"github.com/Masterminds/sprig"
 	"github.com/alienrobotwizard/flotilla-os/core/config"
+	"github.com/alienrobotwizard/flotilla-os/core/exceptions"
 	"github.com/alienrobotwizard/flotilla-os/core/execution/engines"
 	"github.com/alienrobotwizard/flotilla-os/core/state"
 	"github.com/alienrobotwizard/flotilla-os/core/state/models"
@@ -30,6 +32,10 @@ type ExecutionRequest struct {
 	DryRun                *bool                  `json:"dry_run,omitempty"`
 }
 
+func (er *ExecutionRequest) SetTemplateVersion(version int64) {
+	er.TemplateVersion = &version
+}
+
 func (er *ExecutionRequest) SetCommand(cmd string) {
 	er.Command = &cmd
 }
@@ -39,52 +45,88 @@ func (er *ExecutionRequest) HasCommand() bool {
 }
 
 type ExecutionService interface {
-	ListRuns(args *state.ListRunsArgs) (models.RunList, error)
-	GetRun(runID string) (models.Run, error)
-	Terminate(runID string) error
-	CreateTemplateRun(args *ExecutionRequest) (models.Run, error)
+	ListRuns(ctx context.Context, args *state.ListRunsArgs) (models.RunList, error)
+	GetRun(ctx context.Context, runID string) (models.Run, error)
+	Logs(ctx context.Context, runID string, lastSeen *string) (string, *string, error)
+	Terminate(ctx context.Context, runID string) error
+	CreateTemplateRun(ctx context.Context, args *ExecutionRequest) (models.Run, error)
 }
 
-func NewExecutionService(c *config.Config, sm state.Manager, engine engines.Engine) (ExecutionService, error) {
+func NewExecutionService(
+	c *config.Config, sm state.Manager, executionEngines engines.Engines) (ExecutionService, error) {
 	return &executionService{
-		sm:     sm,
-		engine: engine,
+		sm:   sm,
+		engs: executionEngines,
 	}, nil
 }
 
 type executionService struct {
-	sm     state.Manager
-	engine engines.Engine
+	sm   state.Manager
+	engs engines.Engines
 }
 
-func (es *executionService) ListRuns(args *state.ListRunsArgs) (models.RunList, error) {
-	return es.sm.ListRuns(args)
+func (es *executionService) ListRuns(ctx context.Context, args *state.ListRunsArgs) (models.RunList, error) {
+	return es.sm.ListRuns(ctx, args)
 }
 
-func (es *executionService) GetRun(runID string) (models.Run, error) {
-	return es.sm.GetRun(runID)
+func (es *executionService) GetRun(ctx context.Context, runID string) (models.Run, error) {
+	run, err := es.sm.GetRun(ctx, runID)
+	if err != nil && errors.Is(err, exceptions.ErrRecordNotFound) {
+		err = MissingRunError(runID)
+	}
+	return run, err
 }
 
-func (es *executionService) Terminate(runID string) error {
-	if run, err := es.GetRun(runID); err != nil {
-		return err
+func (es *executionService) Logs(ctx context.Context, runID string, lastSeen *string) (string, *string, error) {
+	if run, err := es.GetRun(ctx, runID); err != nil {
+		return "", nil, err
 	} else {
-		return es.engine.Terminate(run)
+		args := &state.GetTemplateArgs{TemplateID: run.TemplateID}
+		tmpl, err := es.sm.GetTemplate(ctx, args)
+		if err != nil {
+			if errors.Is(err, exceptions.ErrRecordNotFound) {
+				err = MissingTemplateError(args)
+			}
+			return "", nil, err
+		}
+
+		if engine, err := es.engineForRun(run); err != nil {
+			return "", nil, err
+		} else {
+			return engine.Logs(tmpl, run, lastSeen)
+		}
 	}
 }
 
-func (es *executionService) CreateTemplateRun(args *ExecutionRequest) (run models.Run, err error) {
-	template, err := es.sm.GetTemplate(&state.GetTemplateArgs{
+func (es *executionService) Terminate(ctx context.Context, runID string) error {
+	if run, err := es.GetRun(ctx, runID); err != nil {
+		return err
+	} else {
+		if engine, err := es.engineForRun(run); err != nil {
+			return err
+		} else {
+			return engine.Terminate(run)
+		}
+	}
+}
+
+func (es *executionService) CreateTemplateRun(ctx context.Context, args *ExecutionRequest) (run models.Run, err error) {
+	gta := &state.GetTemplateArgs{
 		TemplateID:      args.TemplateID,
 		TemplateName:    args.TemplateName,
 		TemplateVersion: args.TemplateVersion,
-	})
+	}
+	tmpl, err := es.sm.GetTemplate(ctx, gta)
+
 	if err != nil {
-		return
+		if errors.Is(err, exceptions.ErrRecordNotFound) {
+			return run, MissingTemplateError(gta)
+		}
+		return run, err
 	}
 
 	// 1. Construct run from template
-	if cmd, err := es.renderCommand(template, args); err != nil {
+	if cmd, err := es.renderCommand(tmpl, args); err != nil {
 		// TODO - likely malformed payload, needs to return as such
 		return run, err
 	} else {
@@ -94,25 +136,43 @@ func (es *executionService) CreateTemplateRun(args *ExecutionRequest) (run model
 	}
 
 	run = models.Run{
-		Image:                 template.Image,
+		Image:                 tmpl.Image,
 		Status:                models.StatusQueued,
 		Command:               args.Command,
 		Memory:                args.Memory,
 		Cpu:                   args.CPU,
 		Gpu:                   args.GPU,
 		Engine:                args.Engine,
-		TemplateID:            &template.TemplateID,
+		TemplateID:            &tmpl.TemplateID,
 		ActiveDeadlineSeconds: args.ActiveDeadlineSeconds,
 	}
 
-	if run, err := es.sm.CreateRun(run); err != nil {
+	engine, err := es.engineForRun(run)
+	if err != nil {
+		return run, err
+	}
+
+	if run, err := es.sm.CreateRun(ctx, run); err != nil {
 		return run, err
 	} else {
-		if err = es.engine.Enqueue(run); err != nil {
+		if err = engine.Enqueue(run); err != nil {
 			return run, err
 		}
 		queued := time.Now()
-		return es.sm.UpdateRun(run.RunID, models.Run{QueuedAt: &queued})
+		return es.sm.UpdateRun(ctx, run.RunID, models.Run{QueuedAt: &queued})
+	}
+}
+
+func (es *executionService) engineForRun(run models.Run) (engines.Engine, error) {
+	engineName := "local"
+	if run.Engine != nil {
+		engineName = *run.Engine
+	}
+
+	if engine, ok := es.engs.Get(engineName); !ok {
+		return nil, EngineNotConfigured(engineName)
+	} else {
+		return engine, nil
 	}
 }
 

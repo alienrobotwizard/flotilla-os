@@ -40,4 +40,5 @@ func (e MissingResource) Error() string {
 var (
 	ErrRecordNotFound = errors.New("record not found")
 	ErrRetryable      = errors.New("retryable error")
+	ErrMalformedInput = errors.New("malformed input")
 )

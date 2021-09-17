@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"github.com/alienrobotwizard/flotilla-os/core/config"
@@ -16,11 +17,11 @@ import (
 	"time"
 )
 
-func setUp() SQLManager {
+func setUp() Manager {
 	conf, _ := config.NewConfig(nil)
 	conf.Set("database_url", "postgres://flotilla:flotilla@127.0.0.1:5432/flotilla")
-	sm := SQLManager{}
-	err := sm.Initialize(conf)
+	ctx := context.Background()
+	sm, err := NewSQLManager(ctx, conf)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -46,33 +47,35 @@ func withDB(f func(db *sql.DB)) {
 	f(db)
 }
 
-func runSQLManagerTest(test func(sm SQLManager)) {
+func runSQLManagerTest(test func(ctx context.Context, sm Manager)) {
 	sm := setUp()
+	ctx, cancel := context.WithCancel(context.Background())
 	defer tearDown()
-	test(sm)
+	defer cancel()
+	test(ctx, sm)
 }
 
 func TestSQLManager_GetRun(t *testing.T) {
-	runSQLManagerTest(func(sm SQLManager) {
+	runSQLManagerTest(func(ctx context.Context, sm Manager) {
 		runID, image := "cupcake", "shoelace"
 
 		withDB(func(db *sql.DB) {
 			db.Exec("insert into runs (run_id, image) values ($1, $2)", runID, image)
 		})
 
-		r, err := sm.GetRun(runID)
+		r, err := sm.GetRun(ctx, runID)
 		assert.NoError(t, err)
 		assert.Equal(t, runID, r.RunID)
 		assert.Equal(t, image, r.Image)
 
-		_, err = sm.GetRun("failme")
+		_, err = sm.GetRun(ctx, "failme")
 		assert.Error(t, err)
 		assert.Equal(t, true, errors.Is(err, exceptions.ErrRecordNotFound))
 	})
 }
 
 func TestSQLManager_ListRuns(t *testing.T) {
-	runSQLManagerTest(func(sm SQLManager) {
+	runSQLManagerTest(func(ctx context.Context, sm Manager) {
 		rows := []struct {
 			id      string
 			image   string
@@ -114,7 +117,7 @@ func TestSQLManager_ListRuns(t *testing.T) {
 
 		// Test ordinary listing
 		args := &ListRunsArgs{}
-		lr, err := sm.ListRuns(args)
+		lr, err := sm.ListRuns(ctx, args)
 		assert.NoError(t, err)
 		assert.Equal(t, int64(len(rows)), lr.Total)
 
@@ -127,7 +130,7 @@ func TestSQLManager_ListRuns(t *testing.T) {
 			},
 		}
 
-		lr, err = sm.ListRuns(args)
+		lr, err = sm.ListRuns(ctx, args)
 		assert.NoError(t, err)
 		assert.Equal(t, int64(1), lr.Total)
 
@@ -140,7 +143,7 @@ func TestSQLManager_ListRuns(t *testing.T) {
 			},
 		}
 
-		lr, err = sm.ListRuns(args)
+		lr, err = sm.ListRuns(ctx, args)
 		assert.NoError(t, err)
 		assert.Equal(t, int64(2), lr.Total)
 
@@ -154,7 +157,7 @@ func TestSQLManager_ListRuns(t *testing.T) {
 			},
 		}
 
-		lr, err = sm.ListRuns(args)
+		lr, err = sm.ListRuns(ctx, args)
 		assert.NoError(t, err)
 		assert.Equal(t, int64(1), lr.Total)
 
@@ -165,26 +168,26 @@ func TestSQLManager_ListRuns(t *testing.T) {
 			},
 		}
 
-		lr, err = sm.ListRuns(args)
+		lr, err = sm.ListRuns(ctx, args)
 		assert.NoError(t, err)
 		assert.Equal(t, int64(1), lr.Total)
 	})
 }
 
 func TestSQLManager_CreateRun(t *testing.T) {
-	runSQLManagerTest(func(sm SQLManager) {
+	runSQLManagerTest(func(ctx context.Context, sm Manager) {
 		run := models.Run{
 			Status: models.StatusQueued,
 		}
 
-		created, err := sm.CreateRun(run)
+		created, err := sm.CreateRun(ctx, run)
 		assert.NoError(t, err)
 		assert.Equal(t, true, strings.HasPrefix(created.RunID, models.DefaultEngine))
 	})
 }
 
 func TestSQLManager_UpdateRun(t *testing.T) {
-	runSQLManagerTest(func(sm SQLManager) {
+	runSQLManagerTest(func(ctx context.Context, sm Manager) {
 		withDB(func(db *sql.DB) {
 			sql := "insert into runs (run_id, status) values ($1, $2)"
 			db.Exec(sql, "A", models.StatusQueued)
@@ -194,14 +197,14 @@ func TestSQLManager_UpdateRun(t *testing.T) {
 			Status: models.StatusNeedsRetry,
 		}
 
-		updated, err := sm.UpdateRun("A", updates)
+		updated, err := sm.UpdateRun(ctx, "A", updates)
 		assert.NoError(t, err)
 		assert.Equal(t, models.StatusNeedsRetry, updated.Status)
 	})
 }
 
 func TestSQLManager_GetTemplate(t *testing.T) {
-	runSQLManagerTest(func(sm SQLManager) {
+	runSQLManagerTest(func(ctx context.Context, sm Manager) {
 		templateID, templateName, templateVersion := "cupcake", "shoelace", int64(700)
 
 		withDB(func(db *sql.DB) {
@@ -209,17 +212,17 @@ func TestSQLManager_GetTemplate(t *testing.T) {
 				templateID, templateName, templateVersion)
 		})
 
-		tmpl, err := sm.GetTemplate(&GetTemplateArgs{TemplateID: &templateID})
+		tmpl, err := sm.GetTemplate(ctx, &GetTemplateArgs{TemplateID: &templateID})
 		assert.NoError(t, err)
 		assert.Equal(t, templateID, tmpl.TemplateID)
 		assert.Equal(t, templateName, tmpl.TemplateName)
 
-		tmpl, err = sm.GetTemplate(&GetTemplateArgs{TemplateName: &templateName})
+		tmpl, err = sm.GetTemplate(ctx, &GetTemplateArgs{TemplateName: &templateName})
 		assert.NoError(t, err)
 		assert.Equal(t, templateID, tmpl.TemplateID)
 		assert.Equal(t, templateName, tmpl.TemplateName)
 
-		tmpl, err = sm.GetTemplate(&GetTemplateArgs{TemplateName: &templateName, TemplateVersion: &templateVersion})
+		tmpl, err = sm.GetTemplate(ctx, &GetTemplateArgs{TemplateName: &templateName, TemplateVersion: &templateVersion})
 		assert.NoError(t, err)
 		assert.Equal(t, templateID, tmpl.TemplateID)
 		assert.Equal(t, templateName, tmpl.TemplateName)
@@ -227,7 +230,7 @@ func TestSQLManager_GetTemplate(t *testing.T) {
 }
 
 func TestSQLManager_ListTemplates(t *testing.T) {
-	runSQLManagerTest(func(sm SQLManager) {
+	runSQLManagerTest(func(ctx context.Context, sm Manager) {
 		rows := []struct {
 			id      string
 			name    string
@@ -246,13 +249,13 @@ func TestSQLManager_ListTemplates(t *testing.T) {
 		})
 
 		args := &ListArgs{}
-		lr, err := sm.ListTemplates(args)
+		lr, err := sm.ListTemplates(ctx, args)
 		assert.NoError(t, err)
 		assert.Equal(t, int64(len(rows)), lr.Total)
 
 		limit := 1
 		args.Limit = &limit
-		lr, err = sm.ListTemplates(args)
+		lr, err = sm.ListTemplates(ctx, args)
 		assert.NoError(t, err)
 		assert.Equal(t, int64(len(rows)), lr.Total)
 		assert.Equal(t, 1, len(lr.Templates))
@@ -261,7 +264,7 @@ func TestSQLManager_ListTemplates(t *testing.T) {
 		args.SortBy = &sortBy
 		args.Order = &order
 
-		lr, err = sm.ListTemplates(args)
+		lr, err = sm.ListTemplates(ctx, args)
 		assert.NoError(t, err)
 		assert.Equal(t, int64(len(rows)), lr.Total)
 		assert.Equal(t, rows[2].name, lr.Templates[0].TemplateName)
@@ -269,13 +272,13 @@ func TestSQLManager_ListTemplates(t *testing.T) {
 }
 
 func TestSQLManager_CreateTemplate(t *testing.T) {
-	runSQLManagerTest(func(sm SQLManager) {
+	runSQLManagerTest(func(ctx context.Context, sm Manager) {
 		tmpl := models.Template{
 			TemplateName: "applesauce",
 			Version:      7,
 		}
 
-		created, err := sm.CreateTemplate(tmpl)
+		created, err := sm.CreateTemplate(ctx, tmpl)
 		assert.NoError(t, err)
 		assert.Equal(t, true, strings.HasPrefix(created.TemplateID, "tpl-"))
 
@@ -283,7 +286,7 @@ func TestSQLManager_CreateTemplate(t *testing.T) {
 			TemplateName: tmpl.TemplateName,
 			Version:      tmpl.Version,
 		}
-		_, err = sm.CreateTemplate(tmpl)
+		_, err = sm.CreateTemplate(ctx, tmpl)
 		assert.Error(t, err, "should not be able to create template with duplicate (template_name, version)")
 
 		tmpl = models.Template{
@@ -291,23 +294,23 @@ func TestSQLManager_CreateTemplate(t *testing.T) {
 			Version:      8,
 		}
 
-		created, err = sm.CreateTemplate(tmpl)
+		created, err = sm.CreateTemplate(ctx, tmpl)
 		assert.NoError(t, err,
 			"should be able to create template with duplicate template_name but different version")
 	})
 }
 
 func TestSQLManager_GetWorker(t *testing.T) {
-	runSQLManagerTest(func(sm SQLManager) {
-		w, err := sm.GetWorker(models.RetryWorker, models.DefaultEngine)
+	runSQLManagerTest(func(ctx context.Context, sm Manager) {
+		w, err := sm.GetWorker(ctx, models.RetryWorker, models.DefaultEngine)
 		assert.NoError(t, err)
 		assert.Equal(t, string(models.RetryWorker), w.WorkerType)
 	})
 }
 
 func TestSQLManager_ListWorkers(t *testing.T) {
-	runSQLManagerTest(func(sm SQLManager) {
-		lr, err := sm.ListWorkers("eks")
+	runSQLManagerTest(func(ctx context.Context, sm Manager) {
+		lr, err := sm.ListWorkers(ctx, "eks")
 		assert.NoError(t, err)
 		// Essentially just testing that defaults are working
 		assert.Equal(t, int64(3), lr.Total)
@@ -315,16 +318,16 @@ func TestSQLManager_ListWorkers(t *testing.T) {
 }
 
 func TestSQLManager_UpdateWorker(t *testing.T) {
-	runSQLManagerTest(func(sm SQLManager) {
+	runSQLManagerTest(func(ctx context.Context, sm Manager) {
 		updates := models.Worker{CountPerInstance: 100}
-		updated, err := sm.UpdateWorker(models.RetryWorker, updates)
+		updated, err := sm.UpdateWorker(ctx, models.RetryWorker, updates)
 		assert.NoError(t, err)
 		assert.Equal(t, updates.CountPerInstance, updated.CountPerInstance)
 	})
 }
 
 func TestSQLManager_BatchUpdateWorkers(t *testing.T) {
-	runSQLManagerTest(func(sm SQLManager) {
+	runSQLManagerTest(func(ctx context.Context, sm Manager) {
 
 	})
 }

@@ -1,17 +1,19 @@
 package services
 
 import (
+	"context"
 	"github.com/alienrobotwizard/flotilla-os/core/config"
 	"github.com/alienrobotwizard/flotilla-os/core/exceptions"
 	"github.com/alienrobotwizard/flotilla-os/core/state"
 	"github.com/alienrobotwizard/flotilla-os/core/state/models"
+	"github.com/pkg/errors"
 	"strings"
 )
 
 type TemplateService interface {
-	GetTemplate(args *state.GetTemplateArgs) (models.Template, error)
-	ListTemplates(args *state.ListArgs) (models.TemplateList, error)
-	CreateTemplate(t models.Template) (models.Template, error)
+	GetTemplate(ctx context.Context, args *state.GetTemplateArgs) (models.Template, error)
+	ListTemplates(ctx context.Context, args *state.ListArgs) (models.TemplateList, error)
+	CreateTemplate(ctx context.Context, t models.Template) (models.Template, bool, error)
 }
 
 type templateService struct {
@@ -22,17 +24,21 @@ func NewTemplateService(c *config.Config, sm state.Manager) (TemplateService, er
 	return &templateService{sm: sm}, nil
 }
 
-func (ts *templateService) GetTemplate(args *state.GetTemplateArgs) (models.Template, error) {
-	return ts.sm.GetTemplate(args)
+func (ts *templateService) GetTemplate(ctx context.Context, args *state.GetTemplateArgs) (models.Template, error) {
+	tmpl, err := ts.sm.GetTemplate(ctx, args)
+	if err != nil && errors.Is(err, exceptions.ErrRecordNotFound) {
+		err = MissingTemplateError(args)
+	}
+	return tmpl, err
 }
 
-func (ts *templateService) ListTemplates(args *state.ListArgs) (models.TemplateList, error) {
-	return ts.sm.ListTemplates(args)
+func (ts *templateService) ListTemplates(ctx context.Context, args *state.ListArgs) (models.TemplateList, error) {
+	return ts.sm.ListTemplates(ctx, args)
 }
 
-func (ts *templateService) CreateTemplate(t models.Template) (models.Template, error) {
+func (ts *templateService) CreateTemplate(ctx context.Context, t models.Template) (models.Template, bool, error) {
 	if valid, reasons := t.IsValid(); !valid {
-		return t, exceptions.MalformedInput{ErrorString: strings.Join(reasons, "\n")}
+		return t, false, TemplateValidationError(strings.Join(reasons, "\n"))
 	}
 
 	limit := 1
@@ -45,8 +51,8 @@ func (ts *templateService) CreateTemplate(t models.Template) (models.Template, e
 		exists   bool
 		existing models.Template
 	)
-	if tl, err := ts.sm.ListTemplates(args); err != nil {
-		return existing, err
+	if tl, err := ts.sm.ListTemplates(ctx, args); err != nil {
+		return existing, false, err
 	} else {
 		if tl.Total > 0 {
 			exists, existing = true, tl.Templates[0]
@@ -55,13 +61,15 @@ func (ts *templateService) CreateTemplate(t models.Template) (models.Template, e
 
 	if !exists {
 		t.Version = 1
-		return ts.sm.CreateTemplate(t)
+		tmpl, err := ts.sm.CreateTemplate(ctx, t)
+		return tmpl, true, err
 	} else {
 		if existing.Diff(t) {
 			t.Version = existing.Version + 1
-			return ts.sm.CreateTemplate(t)
+			tmpl, err := ts.sm.CreateTemplate(ctx, t)
+			return tmpl, false, err
 		} else {
-			return existing, nil
+			return existing, false, nil
 		}
 	}
 }

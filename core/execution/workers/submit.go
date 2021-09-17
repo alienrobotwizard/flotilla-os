@@ -14,26 +14,25 @@ import (
 )
 
 type SubmitWorker struct {
-	ctx          context.Context
 	sm           state.Manager
 	engine       engines.Engine
 	pollInterval time.Duration
 }
 
-func (sw *SubmitWorker) Initialize(c *config.Config, sm state.Manager, engine engines.Engine) error {
+func NewSubmitWorker(c *config.Config, sm state.Manager, engine engines.Engine) (Worker, error) {
 	pollInterval, err := GetWorkerPollInterval(c, models.SubmitWorker)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	sw.sm = sm
-	sw.engine = engine
-	sw.pollInterval = pollInterval
-	return nil
+	return &SubmitWorker{
+		sm:           sm,
+		engine:       engine,
+		pollInterval: pollInterval,
+	}, nil
 }
 
 func (sw *SubmitWorker) Run(ctx context.Context, wg *sync.WaitGroup) error {
-	sw.ctx = ctx
-	go func() {
+	go func(ctx context.Context) {
 		t := time.NewTicker(sw.pollInterval)
 		defer wg.Done()
 		defer t.Stop()
@@ -42,22 +41,22 @@ func (sw *SubmitWorker) Run(ctx context.Context, wg *sync.WaitGroup) error {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				sw.runOnce()
+				sw.runOnce(ctx)
 			}
 		}
-	}()
+	}(ctx)
 	return nil
 }
 
-func (sw *SubmitWorker) runOnce() {
+func (sw *SubmitWorker) runOnce(ctx context.Context) {
 	err := sw.engine.Poll(func(run models.Run) (shouldAck bool, err error) {
-		run, err = sw.sm.GetRun(run.RunID)
+		run, err = sw.sm.GetRun(ctx, run.RunID)
 		if err != nil {
 			return true, err
 		}
 
 		if run.Status == models.StatusQueued {
-			_, err = sw.sm.GetTemplate(&state.GetTemplateArgs{TemplateID: run.TemplateID})
+			_, err = sw.sm.GetTemplate(ctx, &state.GetTemplateArgs{TemplateID: run.TemplateID})
 
 			if err != nil {
 				return true, err
@@ -70,7 +69,7 @@ func (sw *SubmitWorker) runOnce() {
 					return false, nil
 				}
 			}
-			if _, err := sw.sm.UpdateRun(launched.RunID, launched); err != nil {
+			if _, err := sw.sm.UpdateRun(ctx, launched.RunID, launched); err != nil {
 				return true, err
 			}
 			return true, nil

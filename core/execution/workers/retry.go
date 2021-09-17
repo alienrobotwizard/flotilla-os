@@ -12,25 +12,27 @@ import (
 )
 
 type RetryWorker struct {
-	ctx          context.Context
+	sm           state.Manager
 	engine       engines.Engine
 	pollInterval time.Duration
 }
 
-func (sw *RetryWorker) Initialize(c *config.Config, sm state.Manager, engine engines.Engine) error {
+func NewRetryWorker(c *config.Config, sm state.Manager, engine engines.Engine) (Worker, error) {
 	pollInterval, err := GetWorkerPollInterval(c, models.RetryWorker)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	sw.pollInterval = pollInterval
-	return nil
+
+	return &RetryWorker{
+		sm:           sm,
+		engine:       engine,
+		pollInterval: pollInterval,
+	}, nil
 }
 
 func (sw *RetryWorker) Run(ctx context.Context, wg *sync.WaitGroup) error {
-	sw.ctx = ctx
-	go func() {
+	go func(ctx context.Context) {
 		defer wg.Done()
-		fmt.Println("we start")
 		for {
 			select {
 			case <-ctx.Done():
@@ -39,8 +41,7 @@ func (sw *RetryWorker) Run(ctx context.Context, wg *sync.WaitGroup) error {
 			default:
 				time.Sleep(sw.pollInterval)
 			}
-			fmt.Println("we run")
 		}
-	}()
+	}(ctx)
 	return nil
 }
