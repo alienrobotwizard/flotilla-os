@@ -7,7 +7,7 @@ import (
 	"github.com/alienrobotwizard/flotilla-os/core/execution/engines"
 	"github.com/alienrobotwizard/flotilla-os/core/state"
 	"github.com/alienrobotwizard/flotilla-os/core/state/models"
-	"sync"
+	"github.com/alienrobotwizard/flotilla-os/core/utils"
 	"time"
 )
 
@@ -30,18 +30,55 @@ func NewRetryWorker(c *config.Config, sm state.Manager, engine engines.Engine) (
 	}, nil
 }
 
-func (sw *RetryWorker) Run(ctx context.Context, wg *sync.WaitGroup) error {
+func (rw *RetryWorker) Run(ctx context.Context) error {
 	go func(ctx context.Context) {
-		defer wg.Done()
+		t := time.NewTicker(rw.pollInterval)
+		defer t.Stop()
 		for {
 			select {
 			case <-ctx.Done():
-				fmt.Println("we die")
 				return
-			default:
-				time.Sleep(sw.pollInterval)
+			case <-t.C:
+				rw.runOnce(ctx)
 			}
 		}
 	}(ctx)
 	return nil
+}
+
+func (rw *RetryWorker) runOnce(ctx context.Context) {
+	// List runs in the StatusNeedsRetry state and requeue them
+	engineFltr := state.EnginesList([]string{rw.engine.Name()})
+	runList, err := rw.sm.ListRuns(ctx, &state.ListRunsArgs{
+		ListArgs: state.ListArgs{
+			Limit:  utils.IntP(25),
+			Offset: utils.IntP(0),
+			SortBy: utils.StringP("started_at"),
+			Order:  utils.StringP("asc"),
+			Filters: map[string][]string{
+				"status": {
+					string(models.StatusNeedsRetry),
+				},
+			},
+		},
+		Engines: &engineFltr,
+	})
+
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	for _, run := range runList.Runs {
+		if _, err = rw.sm.UpdateRun(ctx, run.RunID, models.Run{Status: models.StatusQueued}); err != nil {
+			fmt.Println(err)
+			return
+		}
+
+		if err = rw.engine.Enqueue(run); err != nil {
+			fmt.Println(err)
+			return
+		}
+	}
+	return
 }

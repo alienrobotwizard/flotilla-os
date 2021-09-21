@@ -12,12 +12,104 @@ import (
 	"time"
 )
 
-// TODO - needs to add method for updating worker count based on db
 type WorkerManager struct {
-	sm      state.Manager
-	conf    *config.Config
-	engines engines.Engines
-	workers map[string][]workerContext
+	sm           state.Manager
+	conf         *config.Config
+	engines      engines.Engines
+	pollInterval time.Duration
+	workers      map[string]engineWorkers
+}
+
+//
+// engineWorkers managers all the worker processes associated with a given engine
+//
+type engineWorkers struct {
+	conf         *config.Config
+	engine       engines.Engine
+	ctx          context.Context
+	stateManager state.Manager
+	workers      map[models.WorkerType][]workerContext
+}
+
+func newEngineWorkers(
+	conf *config.Config, ctx context.Context, stateManager state.Manager, engine engines.Engine) engineWorkers {
+	return engineWorkers{
+		conf:         conf,
+		ctx:          ctx,
+		engine:       engine,
+		stateManager: stateManager,
+		workers:      make(map[models.WorkerType][]workerContext),
+	}
+}
+
+//
+// addWorker will add a worker of a specific type to the pool
+// onStop will be called for this specific worker process when either:
+// a. the worker is removed naturally via the removeWorker function or
+// b. the worker is stopped when this engineWorkers stop function is called
+//
+func (e *engineWorkers) addWorker(workerType models.WorkerType, onStop func()) error {
+	toAdd, err := newWorker(e.conf, e.stateManager, e.engine, workerType)
+	if err != nil {
+		return err
+	}
+
+	childContext, cancel := context.WithCancel(e.ctx)
+	cancelAndRemove := func() {
+		fmt.Println("cancelling individual worker")
+		cancel()
+		onStop()
+	}
+
+	if err = toAdd.Run(childContext); err != nil {
+		cancelAndRemove()
+		return err
+	}
+
+	e.workers[workerType] = append(e.workers[workerType], workerContext{
+		ctx:    childContext,
+		cancel: cancelAndRemove,
+	})
+	return nil
+}
+
+func (e *engineWorkers) stop() {
+	fmt.Println("engineworker is stopping all workers")
+	for _, workers := range e.workers {
+		for _, worker := range workers {
+			worker.cancel()
+		}
+	}
+}
+
+func (e *engineWorkers) count(workerType models.WorkerType) int {
+	return len(e.workers[workerType])
+}
+
+func (e *engineWorkers) removeWorker(workerType models.WorkerType) {
+	if workers, ok := e.workers[workerType]; ok && len(workers) > 0 {
+		toRemove := workers[len(workers)-1]
+		toRemove.cancel()
+		e.workers[workerType] = e.workers[workerType][:len(workers)-1]
+	}
+}
+
+func newWorker(
+	conf *config.Config, stateManager state.Manager,
+	engine engines.Engine, workerType models.WorkerType) (worker Worker, err error) {
+
+	switch workerType {
+	case "retry":
+		worker, err = NewRetryWorker(conf, stateManager, engine)
+	case "status":
+		worker, err = NewStatusWorker(conf, stateManager, engine)
+	case "submit":
+		worker, err = NewSubmitWorker(conf, stateManager, engine)
+	default:
+		err = fmt.Errorf("unimplemented worker type")
+	}
+
+	return
 }
 
 type workerContext struct {
@@ -26,66 +118,93 @@ type workerContext struct {
 }
 
 func NewManager(c *config.Config, sm state.Manager, engines engines.Engines) (*WorkerManager, error) {
-	wm := WorkerManager{
-		sm:      sm,
-		conf:    c,
-		engines: engines,
-		workers: make(map[string][]workerContext),
+	pollInterval, err := GetWorkerPollInterval(c, models.ManagerWorker)
+	if err != nil {
+		return nil, err
 	}
+
+	wm := WorkerManager{
+		sm:           sm,
+		conf:         c,
+		engines:      engines,
+		pollInterval: pollInterval,
+		workers:      make(map[string]engineWorkers),
+	}
+
 	return &wm, nil
 }
 
-func (wm *WorkerManager) Start(ctx context.Context) (*sync.WaitGroup, error) {
-	wg := &sync.WaitGroup{}
-	for engineName, engine := range wm.engines {
+//
+// Start will start the WorkerManager process in a goroutine which will manage
+// all worker types for all execution engines
+//
+func (wm *WorkerManager) Start(ctx context.Context) {
+	go func(ctx context.Context) {
+		// Use a WaitGroup to manage workers and graceful shutdown
+		wg := &sync.WaitGroup{}
+		defer wg.Wait()
+		for engineName, engine := range wm.engines {
+			wm.workers[engineName] = newEngineWorkers(wm.conf, ctx, wm.sm, engine)
+		}
+		wm.runOnce(ctx, wg)
+
+		t := time.NewTicker(wm.pollInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				wm.Stop()
+				return
+			case <-t.C:
+				wm.runOnce(ctx, wg)
+			}
+		}
+	}(ctx)
+}
+
+func (wm *WorkerManager) Stop() {
+	fmt.Println("worker manager is stopping all workers")
+	for _, workers := range wm.workers {
+		workers.stop()
+	}
+}
+
+func (wm *WorkerManager) runOnce(ctx context.Context, wg *sync.WaitGroup) {
+	if err := wm.updateWorkers(ctx, wg); err != nil {
+		fmt.Println(err)
+	}
+}
+
+func (wm *WorkerManager) updateWorkers(ctx context.Context, wg *sync.WaitGroup) error {
+	for engineName := range wm.engines {
+		workersForEngine := wm.workers[engineName]
 		if workerList, err := wm.sm.ListWorkers(ctx, engineName); err != nil {
-			return nil, err
+			return err
 		} else {
-			wg.Add(int(workerList.Total))
-			for _, worker := range workerList.Workers {
-				wm.workers[worker.WorkerType] = make([]workerContext, worker.CountPerInstance)
-				for i := 0; i < worker.CountPerInstance; i++ {
-					if wctx, cancelFunc, err := wm.newWorker(ctx, wg, worker.WorkerType, engine); err != nil {
-						return nil, err
-					} else {
-						wm.workers[worker.WorkerType][i] = workerContext{ctx: wctx, cancel: cancelFunc}
+			for _, workerInfo := range workerList.Workers {
+				workerType := models.WorkerType(workerInfo.WorkerType)
+				existingCount := workersForEngine.count(workerType)
+				desiredCount := workerInfo.CountPerInstance
+				if existingCount > desiredCount {
+					for i := 0; i < existingCount-desiredCount; i++ {
+						workersForEngine.removeWorker(workerType)
+					}
+				} else if existingCount < desiredCount {
+					for i := 0; i < desiredCount-existingCount; i++ {
+						// Add to WaitGroup when worker is added, taking care
+						// to remove it (call Done) when the worker is stopped or removed
+						wg.Add(1)
+						if err := workersForEngine.addWorker(workerType, func() {
+							wg.Done()
+						}); err != nil {
+							return err
+						}
 					}
 				}
 			}
 		}
 	}
-
-	go func(ctx context.Context) {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			}
-		}
-	}(ctx)
-	return wg, nil
-}
-
-func (wm *WorkerManager) newWorker(
-	ctx context.Context, wg *sync.WaitGroup, workerType string, engine engines.Engine) (context.Context, context.CancelFunc, error) {
-	var (
-		err    error
-		worker Worker
-	)
-	switch workerType {
-	case "retry":
-		worker, err = NewRetryWorker(wm.conf, wm.sm, engine)
-	case "status":
-		worker, err = NewStatusWorker(wm.conf, wm.sm, engine)
-	case "submit":
-		worker, err = NewSubmitWorker(wm.conf, wm.sm, engine)
-	}
-
-	if err != nil {
-		return nil, nil, err
-	}
-	child, f := context.WithCancel(ctx)
-	return child, f, worker.Run(child, wg)
+	return nil
 }
 
 func GetWorkerPollInterval(c *config.Config, workerType models.WorkerType) (time.Duration, error) {

@@ -95,16 +95,12 @@ func (app *App) Run() error {
 		app.appShutdown()
 	}()
 
-	wg, err := app.workerManager.Start(app.appContext)
-	if err != nil {
-		return err
-	}
+	app.workerManager.Start(app.appContext)
 
 	go func() {
 		select {
 		case <-signals:
 			app.appShutdown()
-			wg.Wait()
 			srv.Shutdown(app.appContext)
 		case <-app.appContext.Done():
 			fmt.Println("context is done")

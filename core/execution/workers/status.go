@@ -9,7 +9,6 @@ import (
 	"github.com/alienrobotwizard/flotilla-os/core/state/models"
 	"github.com/alienrobotwizard/flotilla-os/core/utils"
 	"github.com/pkg/errors"
-	"sync"
 	"time"
 )
 
@@ -32,10 +31,9 @@ func NewStatusWorker(c *config.Config, sm state.Manager, engine engines.Engine) 
 	}, nil
 }
 
-func (sw *StatusWorker) Run(ctx context.Context, wg *sync.WaitGroup) error {
+func (sw *StatusWorker) Run(ctx context.Context) error {
 	go func(ctx context.Context) {
 		t := time.NewTicker(sw.pollInterval)
-		defer wg.Done()
 		defer t.Stop()
 		for {
 			select {
@@ -50,7 +48,7 @@ func (sw *StatusWorker) Run(ctx context.Context, wg *sync.WaitGroup) error {
 }
 
 func (sw *StatusWorker) runOnce(ctx context.Context) {
-	allEngines := state.EnginesList(models.Engines)
+	engineFltr := state.EnginesList([]string{sw.engine.Name()})
 	runs, err := sw.sm.ListRuns(ctx, &state.ListRunsArgs{
 		ListArgs: state.ListArgs{
 			Limit:  utils.IntP(1000),
@@ -65,7 +63,7 @@ func (sw *StatusWorker) runOnce(ctx context.Context) {
 				},
 			},
 		},
-		Engines: &allEngines,
+		Engines: &engineFltr,
 	})
 
 	if err != nil {

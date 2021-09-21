@@ -9,7 +9,6 @@ import (
 	"github.com/alienrobotwizard/flotilla-os/core/state"
 	"github.com/alienrobotwizard/flotilla-os/core/state/models"
 	"github.com/pkg/errors"
-	"sync"
 	"time"
 )
 
@@ -31,10 +30,9 @@ func NewSubmitWorker(c *config.Config, sm state.Manager, engine engines.Engine) 
 	}, nil
 }
 
-func (sw *SubmitWorker) Run(ctx context.Context, wg *sync.WaitGroup) error {
+func (sw *SubmitWorker) Run(ctx context.Context) error {
 	go func(ctx context.Context) {
 		t := time.NewTicker(sw.pollInterval)
-		defer wg.Done()
 		defer t.Stop()
 		for {
 			select {

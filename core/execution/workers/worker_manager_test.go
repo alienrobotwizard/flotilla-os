@@ -40,6 +40,7 @@ func TestWorkerManager_Start(t *testing.T) {
 	}}
 
 	conf, _ := config.NewConfig(nil)
+	conf.Set(fmt.Sprintf("worker.%s_interval", models.ManagerWorker), "1s")
 	conf.Set(fmt.Sprintf("worker.%s_interval", models.SubmitWorker), "1s")
 	conf.Set(fmt.Sprintf("worker.%s_interval", models.RetryWorker), "2s")
 	conf.Set(fmt.Sprintf("worker.%s_interval", models.StatusWorker), "10s")
@@ -48,11 +49,12 @@ func TestWorkerManager_Start(t *testing.T) {
 	wm, _ := NewManager(conf, sm, map[string]engines.Engine{"local": engine})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	_, err := wm.Start(ctx)
-	assert.NoError(t, err)
+	wm.Start(ctx)
 
-	for workerType, workerContexts := range wm.workers {
-		expected, ok := expectedWorkerCounts[models.WorkerType(workerType)]
+	localEngineWorkers := wm.workers["local"]
+
+	for workerType, workerContexts := range localEngineWorkers.workers {
+		expected, ok := expectedWorkerCounts[workerType]
 		assert.True(t, ok, "expected %s worker type to be created", workerType)
 		assert.Equal(t, expected, len(workerContexts))
 		for _, wc := range workerContexts {
@@ -60,7 +62,8 @@ func TestWorkerManager_Start(t *testing.T) {
 		}
 	}
 	cancel()
-	for _, workerContexts := range wm.workers {
+
+	for _, workerContexts := range localEngineWorkers.workers {
 		for _, wc := range workerContexts {
 			assert.True(t, errors.Is(wc.ctx.Err(), context.Canceled))
 		}

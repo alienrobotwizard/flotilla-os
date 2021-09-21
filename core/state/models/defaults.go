@@ -29,7 +29,8 @@ const (
 type WorkerType string
 
 const (
-	RetryWorker  WorkerType = "retry"
-	SubmitWorker WorkerType = "submit"
-	StatusWorker WorkerType = "status"
+	RetryWorker   WorkerType = "retry"
+	SubmitWorker  WorkerType = "submit"
+	StatusWorker  WorkerType = "status"
+	ManagerWorker WorkerType = "manager"
 )
