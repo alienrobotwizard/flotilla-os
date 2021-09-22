@@ -11,7 +11,7 @@ export type Props = {
   values: Env[]
   push: (env: Env) => void
   remove: (index: number) => void
-  errors: string | FormikErrors<any> | undefined
+  errors: string | FormikErrors<any> | string[] | FormikErrors<any>[] | undefined
 }
 
 export const EnvFieldArray: React.FunctionComponent<Props> = ({
