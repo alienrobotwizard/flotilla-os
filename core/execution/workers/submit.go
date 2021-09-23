@@ -2,13 +2,14 @@ package workers
 
 import (
 	"context"
-	"fmt"
 	"github.com/alienrobotwizard/flotilla-os/core/config"
 	"github.com/alienrobotwizard/flotilla-os/core/exceptions"
 	"github.com/alienrobotwizard/flotilla-os/core/execution/engines"
 	"github.com/alienrobotwizard/flotilla-os/core/state"
 	"github.com/alienrobotwizard/flotilla-os/core/state/models"
 	"github.com/pkg/errors"
+	"log"
+	"os"
 	"time"
 )
 
@@ -16,6 +17,7 @@ type SubmitWorker struct {
 	sm           state.Manager
 	engine       engines.Engine
 	pollInterval time.Duration
+	logger       *log.Logger
 }
 
 func NewSubmitWorker(c *config.Config, sm state.Manager, engine engines.Engine) (Worker, error) {
@@ -27,10 +29,12 @@ func NewSubmitWorker(c *config.Config, sm state.Manager, engine engines.Engine) 
 		sm:           sm,
 		engine:       engine,
 		pollInterval: pollInterval,
+		logger:       log.New(os.Stderr, "SubmitWorker: ", log.LstdFlags),
 	}, nil
 }
 
 func (sw *SubmitWorker) Run(ctx context.Context) error {
+	sw.logger.Printf("Starting with poll interval [%s]\n", sw.pollInterval)
 	go func(ctx context.Context) {
 		t := time.NewTicker(sw.pollInterval)
 		defer t.Stop()
@@ -48,6 +52,7 @@ func (sw *SubmitWorker) Run(ctx context.Context) error {
 
 func (sw *SubmitWorker) runOnce(ctx context.Context) {
 	err := sw.engine.Poll(func(run models.Run) (shouldAck bool, err error) {
+		sw.logger.Printf("Processing run: [%s]\n", run.RunID)
 		run, err = sw.sm.GetRun(ctx, run.RunID)
 		if err != nil {
 			return true, err
@@ -63,6 +68,7 @@ func (sw *SubmitWorker) runOnce(ctx context.Context) {
 			if err != nil {
 				if !errors.Is(err, exceptions.ErrRetryable) {
 					launched.Status = models.StatusStopped
+					launched.RunExceptions = &models.RunExceptions{err.Error()}
 				} else {
 					return false, nil
 				}
@@ -72,7 +78,11 @@ func (sw *SubmitWorker) runOnce(ctx context.Context) {
 			}
 			return true, nil
 		}
+		sw.logger.Printf("Received run: [%s] with non-queued status [%s], not-acking\n", run.RunID, run.Status)
 		return false, nil
 	})
-	fmt.Println(err)
+
+	if err != nil && !errors.Is(err, engines.ErrNoRuns) {
+		sw.logger.Printf("[ERROR]: %v\n", err)
+	}
 }

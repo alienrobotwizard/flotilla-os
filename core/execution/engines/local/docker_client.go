@@ -58,7 +58,7 @@ func (dc *dockerClient) Execute(ctx context.Context, run models.Run) (containerI
 	}
 
 	if run.Memory != nil {
-		resources.MemoryReservation = *run.Memory
+		resources.MemoryReservation = (*run.Memory) * 1000000
 	}
 
 	resp, err := dc.cli.ContainerCreate(ctx, &container.Config{

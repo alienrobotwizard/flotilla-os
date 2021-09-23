@@ -8,6 +8,8 @@ import (
 	"github.com/alienrobotwizard/flotilla-os/core/state"
 	"github.com/alienrobotwizard/flotilla-os/core/state/models"
 	"github.com/pkg/errors"
+	"log"
+	"os"
 	"sync"
 	"time"
 )
@@ -18,6 +20,7 @@ type WorkerManager struct {
 	engines      engines.Engines
 	pollInterval time.Duration
 	workers      map[string]engineWorkers
+	logger       *log.Logger
 }
 
 //
@@ -29,6 +32,7 @@ type engineWorkers struct {
 	ctx          context.Context
 	stateManager state.Manager
 	workers      map[models.WorkerType][]workerContext
+	logger       *log.Logger
 }
 
 func newEngineWorkers(
@@ -39,6 +43,7 @@ func newEngineWorkers(
 		engine:       engine,
 		stateManager: stateManager,
 		workers:      make(map[models.WorkerType][]workerContext),
+		logger:       log.New(os.Stderr, fmt.Sprintf("EngineWorkers[%s]: ", engine.Name()), log.LstdFlags),
 	}
 }
 
@@ -56,7 +61,7 @@ func (e *engineWorkers) addWorker(workerType models.WorkerType, onStop func()) e
 
 	childContext, cancel := context.WithCancel(e.ctx)
 	cancelAndRemove := func() {
-		fmt.Println("cancelling individual worker")
+		e.logger.Printf("Removing worker of type [%s]\n", workerType)
 		cancel()
 		onStop()
 	}
@@ -74,7 +79,7 @@ func (e *engineWorkers) addWorker(workerType models.WorkerType, onStop func()) e
 }
 
 func (e *engineWorkers) stop() {
-	fmt.Println("engineworker is stopping all workers")
+	e.logger.Println("Stopping all workers")
 	for _, workers := range e.workers {
 		for _, worker := range workers {
 			worker.cancel()
@@ -129,6 +134,7 @@ func NewManager(c *config.Config, sm state.Manager, engines engines.Engines) (*W
 		engines:      engines,
 		pollInterval: pollInterval,
 		workers:      make(map[string]engineWorkers),
+		logger:       log.New(os.Stderr, "WorkerManager: ", log.LstdFlags),
 	}
 
 	return &wm, nil
@@ -139,11 +145,13 @@ func NewManager(c *config.Config, sm state.Manager, engines engines.Engines) (*W
 // all worker types for all execution engines
 //
 func (wm *WorkerManager) Start(ctx context.Context) {
+	wm.logger.Printf("Starting with poll interval [%s]\n", wm.pollInterval)
 	go func(ctx context.Context) {
 		// Use a WaitGroup to manage workers and graceful shutdown
 		wg := &sync.WaitGroup{}
 		defer wg.Wait()
 		for engineName, engine := range wm.engines {
+			wm.logger.Printf("Creating new workers for engine [%s]\n", engineName)
 			wm.workers[engineName] = newEngineWorkers(wm.conf, ctx, wm.sm, engine)
 		}
 		wm.runOnce(ctx, wg)
@@ -163,7 +171,6 @@ func (wm *WorkerManager) Start(ctx context.Context) {
 }
 
 func (wm *WorkerManager) Stop() {
-	fmt.Println("worker manager is stopping all workers")
 	for _, workers := range wm.workers {
 		workers.stop()
 	}
@@ -171,7 +178,7 @@ func (wm *WorkerManager) Stop() {
 
 func (wm *WorkerManager) runOnce(ctx context.Context, wg *sync.WaitGroup) {
 	if err := wm.updateWorkers(ctx, wg); err != nil {
-		fmt.Println(err)
+		wm.logger.Printf("[ERROR]: %v\n", err)
 	}
 }
 

@@ -36,6 +36,7 @@ func NewApp(c *config.Config, extraEngines ...engines.Engine) (App, error) {
 		app App
 		es  services.ExecutionService
 		ts  services.TemplateService
+		ws  services.WorkerService
 		wm  *workers.WorkerManager
 		err error
 	)
@@ -69,7 +70,11 @@ func NewApp(c *config.Config, extraEngines ...engines.Engine) (App, error) {
 		return app, errors.Wrap(err, "problem initializing template service")
 	}
 
-	app.handler = Initialize(ts, es)
+	if ws, err = services.NewWorkerService(c, sm); err != nil {
+		return app, errors.Wrap(err, "problem initializing worker service")
+	}
+
+	app.handler = Initialize(ts, es, ws)
 	if wm, err = workers.NewManager(c, sm, engineMap); err != nil {
 		return app, errors.Wrap(err, "problem initializing worker manager")
 	}

@@ -76,7 +76,7 @@ func (e RunExceptions) Value() (driver.Value, error) {
 
 func (e *RunExceptions) Scan(value interface{}) error {
 	if value != nil {
-		s := []byte(value.(string))
+		s := value.([]uint8)
 		json.Unmarshal(s, &e)
 	}
 	return nil

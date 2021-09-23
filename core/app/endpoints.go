@@ -5,15 +5,31 @@ import (
 	"github.com/alienrobotwizard/flotilla-os/core/exceptions"
 	"github.com/alienrobotwizard/flotilla-os/core/state"
 	"github.com/alienrobotwizard/flotilla-os/core/state/models"
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/pkg/errors"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 func Initialize(
-	templateService services.TemplateService, executionService services.ExecutionService) *gin.Engine {
+	templateService services.TemplateService,
+	executionService services.ExecutionService,
+	workerService services.WorkerService,
+) *gin.Engine {
 	d := gin.Default()
+
+	// TODO - use config here to set origins, blanket is dangerous
+	d.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"*"},
+		AllowMethods:     []string{"GET", "PUT", "POST", "DELETE"},
+		AllowHeaders:     []string{"Origin", "Content-Type"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}))
+
 	r := d.Group("/api")
 
 	r.PUT("/template/:template_id/execute", func(c *gin.Context) {
@@ -98,12 +114,33 @@ func Initialize(
 	})
 
 	r.GET("/template/history/:run_id", func(c *gin.Context) {
-		runID := c.Param("run_id")
-		run, err := executionService.GetRun(c, runID)
-		if err != nil {
-			abortNotFoundOrError(c, err)
+		getRun(c, executionService)
+	})
+
+	r.GET("/history/:run_id", func(c *gin.Context) {
+		getRun(c, executionService)
+	})
+
+	r.GET("/history", func(c *gin.Context) {
+		var request state.ListRunsArgs
+		if err := c.BindQuery(&request); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		}
-		c.JSON(http.StatusOK, run)
+
+		for k, v := range c.Request.URL.Query() {
+			switch k {
+			case "limit", "offset", "sort_by", "order":
+				continue
+			default:
+				request.AddFilter(k, v[0])
+			}
+		}
+
+		if response, err := executionService.ListRuns(c, &request); err != nil {
+			_ = c.AbortWithError(http.StatusInternalServerError, err)
+		} else {
+			c.JSON(http.StatusOK, response)
+		}
 	})
 
 	r.GET("/template/:template_id/history", func(c *gin.Context) {
@@ -148,7 +185,7 @@ func Initialize(
 		c.JSON(http.StatusOK, gin.H{"terminated": true})
 	})
 
-	r.GET("/:run_id/logs", func(c *gin.Context) {
+	r.GET("/history/:run_id/logs", func(c *gin.Context) {
 		var lastSeen *string
 
 		runID := c.Param("run_id")
@@ -166,7 +203,59 @@ func Initialize(
 		})
 	})
 
+	r.GET("/worker/:engine_name", func(c *gin.Context) {
+		l, err := workerService.List(c, c.Param("engine_name"))
+		if err != nil {
+			abortNotFoundOrError(c, err)
+		}
+		c.JSON(http.StatusOK, l)
+	})
+
+	r.PUT("/worker", func(c *gin.Context) {
+		var updates []models.Worker
+		if err := c.BindJSON(&updates); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		}
+
+		l, err := workerService.BatchUpdate(c, updates)
+		if err != nil {
+			abortNotFoundOrError(c, err)
+		}
+		c.JSON(http.StatusOK, l)
+	})
+
+	r.GET("/worker/:engine_name/:worker_type", func(c *gin.Context) {
+		w, err := workerService.Get(c, c.Param("worker_type"), c.Param("engine_name"))
+		if err != nil {
+			abortNotFoundOrError(c, err)
+		}
+		c.JSON(http.StatusOK, w)
+	})
+
+	r.PUT("/worker/:engine_name/:worker_type", func(c *gin.Context) {
+		var updates models.Worker
+		if err := c.BindJSON(&updates); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		}
+		updates.WorkerType = c.Param("worker_type")
+		updates.Engine = c.Param("engine_name")
+		w, err := workerService.Update(c, updates.WorkerType, updates)
+		if err != nil {
+			abortNotFoundOrError(c, err)
+		}
+		c.JSON(http.StatusOK, w)
+	})
+
 	return d
+}
+
+func getRun(c *gin.Context, executionService services.ExecutionService) {
+	runID := c.Param("run_id")
+	run, err := executionService.GetRun(c, runID)
+	if err != nil {
+		abortNotFoundOrError(c, err)
+	}
+	c.JSON(http.StatusOK, run)
 }
 
 func runTemplateOrAbort(c *gin.Context, service services.ExecutionService, request *services.ExecutionRequest) {

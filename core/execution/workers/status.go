@@ -2,13 +2,14 @@ package workers
 
 import (
 	"context"
-	"fmt"
 	"github.com/alienrobotwizard/flotilla-os/core/config"
 	"github.com/alienrobotwizard/flotilla-os/core/execution/engines"
 	"github.com/alienrobotwizard/flotilla-os/core/state"
 	"github.com/alienrobotwizard/flotilla-os/core/state/models"
 	"github.com/alienrobotwizard/flotilla-os/core/utils"
 	"github.com/pkg/errors"
+	"log"
+	"os"
 	"time"
 )
 
@@ -16,6 +17,7 @@ type StatusWorker struct {
 	sm           state.Manager
 	engine       engines.Engine
 	pollInterval time.Duration
+	logger       *log.Logger
 }
 
 func NewStatusWorker(c *config.Config, sm state.Manager, engine engines.Engine) (Worker, error) {
@@ -28,10 +30,12 @@ func NewStatusWorker(c *config.Config, sm state.Manager, engine engines.Engine) 
 		sm:           sm,
 		engine:       engine,
 		pollInterval: pollInterval,
+		logger:       log.New(os.Stderr, "StatusWorker: ", log.LstdFlags),
 	}, nil
 }
 
 func (sw *StatusWorker) Run(ctx context.Context) error {
+	sw.logger.Printf("Starting with poll interval [%s]\n", sw.pollInterval)
 	go func(ctx context.Context) {
 		t := time.NewTicker(sw.pollInterval)
 		defer t.Stop()
@@ -67,16 +71,18 @@ func (sw *StatusWorker) runOnce(ctx context.Context) {
 	})
 
 	if err != nil {
-		// TODO - log me
-		fmt.Println(err)
+		sw.logger.Printf("[ERROR]: %v\n", err)
 		return
+	}
+
+	if runs.Total > 0 {
+		sw.logger.Printf("Got [%v] runs to update status for\n", runs.Total)
 	}
 
 	for _, run := range runs.Runs {
 		updated, err := sw.engine.GetLatest(run)
 		if err != nil {
-			// TODO - log
-			fmt.Println(err)
+			sw.logger.Printf("[ERROR]: Problem fetching run [%s] from engine\n%v\n", run.RunID, err)
 			if !errors.Is(err, engines.ErrNotFound) {
 				continue
 			}
@@ -96,8 +102,7 @@ func (sw *StatusWorker) runOnce(ctx context.Context) {
 
 			_, err := sw.sm.UpdateRun(ctx, run.RunID, updated)
 			if err != nil {
-				// TODO - log
-				fmt.Println(err)
+				sw.logger.Printf("[ERROR]: %v\n", err)
 			}
 		}
 	}
@@ -109,5 +114,4 @@ func (sw *StatusWorker) cleanupRun(ctx context.Context, runID string) {
 	if run, err := sw.sm.GetRun(ctx, runID); err == nil {
 		_ = sw.engine.Terminate(run)
 	}
-
 }
