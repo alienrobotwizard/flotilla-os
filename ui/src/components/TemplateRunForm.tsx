@@ -1,43 +1,20 @@
 import * as React from "react"
-import { Formik, Form, FastField, Field } from "formik"
+import {FastField, Field, Form, Formik} from "formik"
 import * as Yup from "yup"
-import { RouteComponentProps } from "react-router-dom"
-import {
-  FormGroup,
-  Button,
-  Intent,
-  Spinner,
-  Classes,
-  RadioGroup,
-  Radio,
-  Collapse,
-} from "@blueprintjs/core"
+import {RouteComponentProps} from "react-router-dom"
+import {Button, Classes, FormGroup, Intent, Radio, RadioGroup, Spinner,} from "@blueprintjs/core"
 import api from "../api"
-import {
-  TemplateExecutionRequest,
-  Run,
-  ExecutionEngine,
-  Template,
-} from "../types"
-import Request, {
-  ChildProps as RequestChildProps,
-  RequestStatus,
-} from "./Request"
+import {ExecutionEngine, Run, Template, TemplateExecutionRequest,} from "../types"
+import Request, {ChildProps as RequestChildProps, RequestStatus,} from "./Request"
 import EnvFieldArray from "./EnvFieldArray"
 import ClusterSelect from "./ClusterSelect"
-import { TemplateContext, TemplateCtx } from "./Template"
+import {TemplateContext, TemplateCtx} from "./Template"
 import Toaster from "./Toaster"
 import ErrorCallout from "./ErrorCallout"
 import FieldError from "./FieldError"
 import NodeLifecycleSelect from "./NodeLifecycleSelect"
 import * as helpers from "../helpers/runFormHelpers"
-import { useSelector } from "react-redux"
-import { RootState } from "../state/store"
-import JSONSchemaForm, {
-  FieldTemplateProps,
-  UiSchema,
-  ArrayFieldTemplateProps,
-} from "react-jsonschema-form"
+import JSONSchemaForm, {ArrayFieldTemplateProps, FieldTemplateProps,} from "react-jsonschema-form"
 
 const getInitialValuesForTemplateRun = (): TemplateExecutionRequest => {
   return {
@@ -47,7 +24,7 @@ const getInitialValuesForTemplateRun = (): TemplateExecutionRequest => {
     owner_id: "",
     memory: 512,
     cpu: 512,
-    engine: ExecutionEngine.EKS,
+    engine: ExecutionEngine.LOCAL,
   }
 }
 
@@ -67,9 +44,8 @@ const validationSchema = Yup.object().shape({
     })
   ),
   engine: Yup.string()
-    .matches(/(eks|ecs)/)
-    .required("A valid engine type of ecs or eks must be set."),
-  node_lifecycle: Yup.string().matches(/(spot|ondemand)/),
+    .matches(/(eks|ecs|local)/)
+    .required("A valid engine type of ecs, eks, or local must be set."),
   template_payload: Yup.object().required("template_payload is required"),
 })
 
@@ -185,7 +161,7 @@ class RunForm extends React.Component<Props> {
                         "cluster",
                         process.env.REACT_APP_EKS_CLUSTER_NAME || ""
                       )
-                    } else if (getEngine() === ExecutionEngine.EKS) {
+                    } else if (getEngine() === ExecutionEngine.EKS || getEngine() === ExecutionEngine.LOCAL) {
                       setFieldValue("cluster", "")
                     }
                   }}
@@ -193,6 +169,7 @@ class RunForm extends React.Component<Props> {
                 >
                   <Radio label="EKS" value={ExecutionEngine.EKS} />
                   <Radio label="ECS" value={ExecutionEngine.ECS} />
+                  <Radio label="ECS" value={ExecutionEngine.LOCAL} />
                 </RadioGroup>
                 <div className="flotilla-form-section-divider" />
 
@@ -201,7 +178,7 @@ class RunForm extends React.Component<Props> {
                 "FastField" as it needs to re-render when value.engine is
                 updated.
               */}
-                {getEngine() !== ExecutionEngine.EKS && (
+                {getEngine() !== ExecutionEngine.EKS && getEngine() !== ExecutionEngine.LOCAL && (
                   <FormGroup
                     label="Cluster"
                     helperText="Select a cluster for this task to execute on."
@@ -245,25 +222,6 @@ class RunForm extends React.Component<Props> {
                     className={Classes.INPUT}
                   />
                   {errors.memory && <FieldError>{errors.memory}</FieldError>}
-                </FormGroup>
-                <div className="flotilla-form-section-divider" />
-                {/* Node Lifecycle Field */}
-                <FormGroup
-                  label="Node Lifecycle"
-                  helperText="This field is only applicable to tasks running on EKS. For more information, please view this document: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-spot-instances.html"
-                >
-                  <Field
-                    name="node_lifecycle"
-                    component={NodeLifecycleSelect}
-                    value={values.node_lifecycle}
-                    onChange={(value: string) => {
-                      setFieldValue("node_lifecycle", value)
-                    }}
-                    isDisabled={getEngine() !== ExecutionEngine.EKS}
-                  />
-                  {errors.node_lifecycle && (
-                    <FieldError>{errors.node_lifecycle}</FieldError>
-                  )}
                 </FormGroup>
                 <div className="flotilla-form-section-divider" />
                 <EnvFieldArray />

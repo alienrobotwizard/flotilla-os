@@ -177,6 +177,7 @@ export type UpdateTaskPayload = {
 export enum ExecutionEngine {
   ECS = "ecs",
   EKS = "eks",
+  LOCAL = "local",
 }
 
 export const DefaultExecutionEngine = ExecutionEngine.EKS

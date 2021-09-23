@@ -47,108 +47,6 @@ class FlotillaClient {
     })
   }
 
-  /** Requests a task definition. */
-  public getTask = ({
-    definitionID,
-  }: {
-    definitionID: string
-  }): Promise<Task> =>
-    this.request<Task>({
-      method: HTTPMethod.GET,
-      url: `/v6/task/${definitionID}`,
-    })
-
-  /** Requests a task definition by its alias. */
-  public getTaskByAlias = ({ alias }: { alias: string }): Promise<Task> =>
-    this.request<Task>({
-      method: HTTPMethod.GET,
-      url: `/v6/task/alias/${alias}`,
-    })
-
-  /** Requests a task definition's history. */
-  public listTaskRuns = ({
-    definitionID,
-    params,
-  }: {
-    definitionID: string
-    params: ListTaskRunsParams
-  }): Promise<ListTaskRunsResponse> =>
-    this.request<ListTaskRunsResponse>({
-      method: HTTPMethod.GET,
-      url: `/v6/task/${definitionID}/history`,
-      params,
-    })
-
-  /** Requests a list of task definitions. */
-  public listTasks = ({
-    params,
-  }: {
-    params: ListTaskParams
-  }): Promise<ListTaskResponse> =>
-    this.request<ListTaskResponse>({
-      method: HTTPMethod.GET,
-      url: `/v6/task`,
-      params,
-    })
-
-  /** Create a new task definition. */
-  public createTask = ({ data }: { data: CreateTaskPayload }): Promise<Task> =>
-    this.request<Task>({
-      method: HTTPMethod.POST,
-      url: `/v6/task`,
-      data,
-    })
-
-  /** Update an existing task definition. */
-  public updateTask = ({
-    definitionID,
-    data,
-  }: {
-    definitionID: string
-    data: UpdateTaskPayload
-  }): Promise<Task> =>
-    this.request<Task>({
-      method: HTTPMethod.PUT,
-      url: `/v6/task/${definitionID}`,
-      data,
-    })
-
-  /** Delete an existing task definition. */
-  public deleteTask = ({
-    definitionID,
-  }: {
-    definitionID: string
-  }): Promise<any> =>
-    this.request<any>({
-      method: HTTPMethod.DELETE,
-      url: `/v6/task/${definitionID}`,
-    })
-
-  /** Runs a task. */
-  public runTask = ({
-    definitionID,
-    data,
-  }: {
-    definitionID: string
-    data: LaunchRequestV2
-  }): Promise<Run> => {
-    const d: Omit<LaunchRequestV2, "owner_id"> = omit(data, "owner_id")
-
-    if (has(data, "owner_id")) {
-      if (d.run_tags) {
-        d.run_tags["OWNER_ID"] = data.owner_id
-      } else {
-        d.run_tags = { OWNER_ID: data.owner_id }
-      }
-    }
-
-    return this.request<Run>({
-      method: HTTPMethod.PUT,
-      url: `/v6/task/${definitionID}/execute`,
-      data: d,
-    })
-  }
-
   /** Requests list of runs. */
   public listRun = ({
     params,
@@ -157,7 +55,7 @@ class FlotillaClient {
   }): Promise<ListRunResponse> =>
     this.request<ListRunResponse>({
       method: HTTPMethod.GET,
-      url: `/v6/history`,
+      url: `/history`,
       params,
     })
 
@@ -165,7 +63,7 @@ class FlotillaClient {
   public getRun = ({ runID }: { runID: string }): Promise<Run> =>
     this.request<Run>({
       method: HTTPMethod.GET,
-      url: `/v6/task/history/${runID}`,
+      url: `/history/${runID}`,
     })
 
   /** Requests the logs of a single run. */
@@ -178,7 +76,7 @@ class FlotillaClient {
   }): Promise<RunLog> =>
     this.request<RunLog>({
       method: HTTPMethod.GET,
-      url: `/v6/${runID}/logs`,
+      url: `/history/${runID}/logs`,
       params: { last_seen: lastSeen },
     })
 
@@ -186,22 +84,10 @@ class FlotillaClient {
   public getRunLogRaw = ({ runID }: { runID: string }): Promise<RunLogRaw> =>
     this.request<RunLogRaw>({
       method: HTTPMethod.GET,
-      url: `/v6/${runID}/logs`,
+      url: `/history/${runID}/logs`,
       params: { raw_text: true },
     })
 
-  /** Stops an existing run */
-  public stopRun = ({
-    definitionID,
-    runID,
-  }: {
-    definitionID: string
-    runID: string
-  }): Promise<any> =>
-    this.request<any>({
-      method: HTTPMethod.DELETE,
-      url: `/v6/task/${definitionID}/history/${runID}`,
-    })
 
   /** Requests available clusters. */
   public listClusters = (): Promise<ListClustersResponse> =>
@@ -241,7 +127,7 @@ class FlotillaClient {
   }): Promise<ListTemplateResponse> =>
     this.request<ListTemplateResponse>({
       method: HTTPMethod.GET,
-      url: `/v7/template`,
+      url: `/template`,
       params,
     })
 
@@ -253,7 +139,7 @@ class FlotillaClient {
   }): Promise<Template> =>
     this.request<Template>({
       method: HTTPMethod.GET,
-      url: `/v7/template/${templateID}`,
+      url: `/template/${templateID}`,
     })
 
   /** Runs a task. */
@@ -266,7 +152,7 @@ class FlotillaClient {
   }): Promise<Run> => {
     return this.request<Run>({
       method: HTTPMethod.PUT,
-      url: `/v7/template/${templateID}/execute`,
+      url: `/template/${templateID}/execute`,
       data,
     })
   }
@@ -281,21 +167,7 @@ class FlotillaClient {
   }): Promise<ListTemplateHistoryResponse> =>
     this.request<ListTemplateHistoryResponse>({
       method: HTTPMethod.GET,
-      url: `/v7/template/${templateID}/history`,
-      params,
-    })
-
-  /** Requests a task definition's history. */
-  public listTemplateHistoryByTemplateName = ({
-    templateName,
-    params,
-  }: {
-    templateName: string
-    params: ListTemplateHistoryParams
-  }): Promise<ListTemplateHistoryResponse> =>
-    this.request<ListTemplateHistoryResponse>({
-      method: HTTPMethod.GET,
-      url: `/v7/template/name/${templateName}/history`,
+      url: `/template/${templateID}/history`,
       params,
     })
 

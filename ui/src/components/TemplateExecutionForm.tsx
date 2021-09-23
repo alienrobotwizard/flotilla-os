@@ -32,7 +32,7 @@ import { getInitialValuesForTemplateExecutionForm } from "../helpers/getInitialV
 
 const validationSchema = Yup.object().shape({
   owner_id: Yup.string(),
-  cluster: Yup.string().required("Required"),
+  cluster: Yup.string(),
   memory: Yup.number()
     .required("Required")
     .min(0),
@@ -46,9 +46,8 @@ const validationSchema = Yup.object().shape({
     })
   ),
   engine: Yup.string()
-    .matches(/(eks|ecs)/)
-    .required("A valid engine type of ecs or eks must be set."),
-  node_lifecycle: Yup.string().matches(/(spot|ondemand)/),
+    .matches(/(eks|ecs|local)/)
+    .required("A valid engine type of ecs, eks, or local must be set."),
   template_payload: Yup.object().required("Template payload is required."),
 })
 
@@ -68,6 +67,7 @@ const TemplateExecutionForm: React.FC<Props> = ({
   error,
   templateID,
 }) => {
+
   return (
     <Formik<TemplateExecutionRequest>
       isInitialValid={(values: any) =>
@@ -81,7 +81,7 @@ const TemplateExecutionForm: React.FC<Props> = ({
     >
       {({ errors, values, setFieldValue, isValid, ...rest }) => {
         const getEngine = (): ExecutionEngine => values.engine
-        console.log(values)
+
         return (
           <Form className="flotilla-form-container">
             {requestStatus === RequestStatus.ERROR && error && (
@@ -112,7 +112,7 @@ const TemplateExecutionForm: React.FC<Props> = ({
                       "cluster",
                       process.env.REACT_APP_EKS_CLUSTER_NAME || ""
                     )
-                  } else if (getEngine() === ExecutionEngine.EKS) {
+                  } else if (getEngine() === ExecutionEngine.EKS || getEngine() === ExecutionEngine.LOCAL) {
                     setFieldValue("cluster", "")
                   }
                 }}
@@ -120,6 +120,7 @@ const TemplateExecutionForm: React.FC<Props> = ({
               >
                 <Radio label="EKS" value={ExecutionEngine.EKS} />
                 <Radio label="ECS" value={ExecutionEngine.ECS} />
+                <Radio label="LOCAL" value={ExecutionEngine.LOCAL} />
               </RadioGroup>
             </FormGroup>
             {/*
@@ -127,7 +128,7 @@ const TemplateExecutionForm: React.FC<Props> = ({
                 "FastField" as it needs to re-render when value.engine is
                 updated.
             */}
-            {getEngine() !== ExecutionEngine.EKS && (
+            {getEngine() !== ExecutionEngine.EKS && getEngine() !== ExecutionEngine.LOCAL && (
               <FormGroup
                 label="Cluster"
                 helperText="Select a cluster for this task to execute on."
@@ -168,23 +169,6 @@ const TemplateExecutionForm: React.FC<Props> = ({
               />
               {errors.memory && <FieldError>{errors.memory}</FieldError>}
             </FormGroup>
-            <FormGroup
-              label={helpers.nodeLifecycleFieldSpec.label}
-              helperText={helpers.nodeLifecycleFieldSpec.description}
-            >
-              <Field
-                name={helpers.nodeLifecycleFieldSpec.name}
-                component={NodeLifecycleSelect}
-                value={values.node_lifecycle}
-                onChange={(value: string) => {
-                  setFieldValue(helpers.nodeLifecycleFieldSpec.name, value)
-                }}
-                isDisabled={getEngine() !== ExecutionEngine.EKS}
-              />
-              {errors.node_lifecycle && (
-                <FieldError>{errors.node_lifecycle}</FieldError>
-              )}
-            </FormGroup>
             <FormGroup label="Template Payload">
               <FastField
                 className={Classes.CODE}
@@ -214,7 +198,7 @@ const TemplateExecutionForm: React.FC<Props> = ({
             <Button
               intent={Intent.PRIMARY}
               type="submit"
-              disabled={isLoading || isValid === false}
+              disabled={isLoading || !isValid}
               style={{ marginTop: 24 }}
               large
             >

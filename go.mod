@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go v1.40.18
 	github.com/containerd/containerd v1.5.5 // indirect
 	github.com/docker/docker v20.10.8+incompatible
+	github.com/gin-contrib/cors v1.3.1 // indirect
 	github.com/gin-gonic/gin v1.7.4
 	github.com/go-kit/kit v0.9.0
 	github.com/go-redis/redis v6.15.6+incompatible

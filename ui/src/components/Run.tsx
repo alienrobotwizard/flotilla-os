@@ -29,7 +29,7 @@ import {
   EnhancedRunStatus,
 } from "../types"
 import ViewHeader from "./ViewHeader"
-import StopRunButton from "./StopRunButton"
+//import StopRunButton from "./StopRunButton"
 import { RUN_FETCH_INTERVAL_MS } from "../constants"
 import Toggler from "./Toggler"
 import LogRequesterCloudWatchLogs from "./LogRequesterCloudWatchLogs"
@@ -191,11 +191,11 @@ export class Run extends React.Component<Props> {
                 <Icon icon="repeat" />
               </Link>
             )
-          } else {
+          } /*else {
             btn = (
               <StopRunButton runID={runID} definitionID={data.definition_id} />
             )
-          }
+          }*/
 
           return (
             <Toggler>
