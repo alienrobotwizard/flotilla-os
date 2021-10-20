@@ -53,6 +53,7 @@ class LogRequesterCloudWatchLogs extends React.Component<Props, State> {
       prevProps.status !== RunStatus.STOPPED &&
       this.props.status === RunStatus.STOPPED
     ) {
+      this.requestLogs()
       this.clearRequestInterval()
     }
   }
@@ -102,7 +103,6 @@ class LogRequesterCloudWatchLogs extends React.Component<Props, State> {
   requestLogs = () => {
     const { runID } = this.props
     const { lastSeen } = this.state
-
     this.setState({ isLoading: true })
 
     api

@@ -2,6 +2,7 @@ package workers
 
 import (
 	"context"
+	"fmt"
 	"github.com/alienrobotwizard/flotilla-os/core/config"
 	"github.com/alienrobotwizard/flotilla-os/core/execution/engines"
 	"github.com/alienrobotwizard/flotilla-os/core/state"
@@ -30,7 +31,7 @@ func NewStatusWorker(c *config.Config, sm state.Manager, engine engines.Engine) 
 		sm:           sm,
 		engine:       engine,
 		pollInterval: pollInterval,
-		logger:       log.New(os.Stderr, "StatusWorker: ", log.LstdFlags),
+		logger:       log.New(os.Stderr, fmt.Sprintf("%s StatusWorker: ", engine.Name()), log.LstdFlags),
 	}, nil
 }
 
@@ -80,7 +81,7 @@ func (sw *StatusWorker) runOnce(ctx context.Context) {
 	}
 
 	for _, run := range runs.Runs {
-		updated, err := sw.engine.GetLatest(run)
+		updated, err := sw.engine.GetLatest(ctx, run)
 		if err != nil {
 			sw.logger.Printf("[ERROR]: Problem fetching run [%s] from engine\n%v\n", run.RunID, err)
 			if !errors.Is(err, engines.ErrNotFound) {
@@ -112,6 +113,6 @@ func (sw *StatusWorker) cleanupRun(ctx context.Context, runID string) {
 	// Wait a reasonable time for any external (outside of our control) processes to finish
 	time.Sleep(120 * time.Second)
 	if run, err := sw.sm.GetRun(ctx, runID); err == nil {
-		_ = sw.engine.Terminate(run)
+		_ = sw.engine.Terminate(ctx, run)
 	}
 }

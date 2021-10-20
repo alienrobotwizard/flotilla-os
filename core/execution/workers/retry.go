@@ -2,6 +2,7 @@ package workers
 
 import (
 	"context"
+	"fmt"
 	"github.com/alienrobotwizard/flotilla-os/core/config"
 	"github.com/alienrobotwizard/flotilla-os/core/execution/engines"
 	"github.com/alienrobotwizard/flotilla-os/core/state"
@@ -29,7 +30,7 @@ func NewRetryWorker(c *config.Config, sm state.Manager, engine engines.Engine) (
 		sm:           sm,
 		engine:       engine,
 		pollInterval: pollInterval,
-		logger:       log.New(os.Stderr, "RetryWorker: ", log.LstdFlags),
+		logger:       log.New(os.Stderr, fmt.Sprintf("%s RetryWorker: ", engine.Name()), log.LstdFlags),
 	}, nil
 }
 
@@ -78,7 +79,7 @@ func (rw *RetryWorker) runOnce(ctx context.Context) {
 				return err
 			}
 
-			if err = rw.engine.Enqueue(run); err != nil {
+			if err = rw.engine.Enqueue(ctx, run); err != nil {
 				return err
 			}
 		}

@@ -22,7 +22,7 @@ var (
 	ErrQueueCapacity = errors.New("job queue is full")
 )
 
-func NewLocalEngine(ctx context.Context, conf *config.Config) (engines.Engine, error) {
+func NewLocalEngine(conf *config.Config) (engines.Engine, error) {
 	logger := log.New(os.Stdout, "Local Execution Engine: ", log.Ldate|log.Ltime|log.Lshortfile)
 	logger.Printf("Initializing local execution engine\n")
 
@@ -32,12 +32,6 @@ func NewLocalEngine(ctx context.Context, conf *config.Config) (engines.Engine, e
 	}
 
 	queue := make(chan models.Run, 100)
-	go func(ctx context.Context, queue chan models.Run) {
-		select {
-		case <-ctx.Done():
-			close(queue)
-		}
-	}(ctx, queue)
 
 	return &Engine{
 		docker: dc,
@@ -50,7 +44,16 @@ func (e *Engine) Name() string {
 	return "local"
 }
 
-func (e *Engine) Enqueue(run models.Run) error {
+func (e *Engine) Close() error {
+	select {
+	case <-e.queue:
+	default:
+		close(e.queue)
+	}
+	return nil
+}
+
+func (e *Engine) Enqueue(ctx context.Context, run models.Run) error {
 	e.logger.Printf("Enqueuing run with id: [%s]\n", run.RunID)
 	if len(e.queue) < 100 {
 		e.queue <- run
@@ -60,12 +63,12 @@ func (e *Engine) Enqueue(run models.Run) error {
 	return nil
 }
 
-func (e *Engine) Terminate(run models.Run) error {
-	return e.docker.Terminate(context.Background(), run)
+func (e *Engine) Terminate(ctx context.Context, run models.Run) error {
+	return e.docker.Terminate(ctx, run)
 }
 
-func (e *Engine) Execute(run models.Run) (models.Run, error) {
-	_, err := e.docker.Execute(context.Background(), run)
+func (e *Engine) Execute(ctx context.Context, run models.Run) (models.Run, error) {
+	_, err := e.docker.Execute(ctx, run)
 	if err != nil {
 		return run, err
 	}
@@ -73,7 +76,7 @@ func (e *Engine) Execute(run models.Run) (models.Run, error) {
 	return run, nil
 }
 
-func (e *Engine) Poll(callback func(models.Run) (shouldAck bool, err error)) error {
+func (e *Engine) Poll(ctx context.Context, callback func(models.Run) (shouldAck bool, err error)) error {
 	var (
 		ok  bool
 		run models.Run
@@ -89,14 +92,16 @@ func (e *Engine) Poll(callback func(models.Run) (shouldAck bool, err error)) err
 			e.queue <- run
 		}
 		return err
+	case <-ctx.Done():
+		return ctx.Err()
 	default:
 		return engines.ErrNoRuns
 	}
 }
 
-func (e *Engine) GetLatest(run models.Run) (models.Run, error) {
+func (e *Engine) GetLatest(ctx context.Context, run models.Run) (models.Run, error) {
 
-	info, err := e.docker.Info(context.Background(), run)
+	info, err := e.docker.Info(ctx, run)
 	if err != nil {
 		return run, err
 	}
@@ -133,16 +138,17 @@ func (e *Engine) GetLatest(run models.Run) (models.Run, error) {
 	return run, nil
 }
 
-func (e *Engine) UpdateMetrics(run models.Run) (models.Run, error) {
+func (e *Engine) UpdateMetrics(ctx context.Context, run models.Run) (models.Run, error) {
 	// Not supported yet
 	return run, nil
 }
 
-func (e *Engine) Logs(template models.Template, run models.Run, lastSeen *string) (string, *string, error) {
-	return e.docker.Logs(context.Background(), run, lastSeen)
+func (e *Engine) Logs(
+	ctx context.Context, template models.Template, run models.Run, lastSeen *string) (string, *string, error) {
+	return e.docker.Logs(ctx, run, lastSeen)
 }
 
-func (e *Engine) LogsText(template models.Template, run models.Run, w http.ResponseWriter) error {
+func (e *Engine) LogsText(ctx context.Context, template models.Template, run models.Run, w http.ResponseWriter) error {
 	e.logger.Println("getting logs text")
 	return nil
 }

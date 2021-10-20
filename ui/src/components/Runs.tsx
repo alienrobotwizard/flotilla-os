@@ -82,10 +82,10 @@ export const Runs: React.FunctionComponent<Props> = ({
               ),
               isSortable: true,
             },
-            alias: {
-              displayName: "Alias",
+            template: {
+              displayName: "Template",
               render: (r: Run) => (
-                <Link to={`/tasks/${r.definition_id}`}>{r.alias}</Link>
+                <Link to={`/templates/${r.template_id}`}>{r.template_id}</Link>
               ),
               isSortable: false,
             },
@@ -116,7 +116,7 @@ export const Runs: React.FunctionComponent<Props> = ({
         ]}
       />
       <div className="flotilla-list-utils-container">
-        <FormGroup label="Alias" helperText="Search by task alias.">
+        <FormGroup label="Template" helperText="Search by template name.">
           <GenericMultiSelect
             value={get(query, "alias", [])}
             onChange={(value: string[]) => {

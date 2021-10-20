@@ -1,6 +1,7 @@
 package engines
 
 import (
+	"context"
 	"github.com/alienrobotwizard/flotilla-os/core/state/models"
 	"github.com/pkg/errors"
 	"net/http"
@@ -8,14 +9,15 @@ import (
 
 type Engine interface {
 	Name() string
-	Enqueue(run models.Run) error
-	Terminate(run models.Run) error
-	Execute(run models.Run) (models.Run, error)
-	Poll(callback func(models.Run) (shouldAck bool, err error)) error
-	GetLatest(run models.Run) (models.Run, error)
-	UpdateMetrics(run models.Run) (models.Run, error)
-	Logs(template models.Template, run models.Run, lastSeen *string) (string, *string, error)
-	LogsText(template models.Template, run models.Run, w http.ResponseWriter) error
+	Enqueue(ctx context.Context, run models.Run) error
+	Terminate(ctx context.Context, run models.Run) error
+	Execute(ctx context.Context, run models.Run) (models.Run, error)
+	Poll(ctx context.Context, callback func(models.Run) (shouldAck bool, err error)) error
+	GetLatest(ctx context.Context, run models.Run) (models.Run, error)
+	UpdateMetrics(ctx context.Context, run models.Run) (models.Run, error)
+	Logs(ctx context.Context, template models.Template, run models.Run, lastSeen *string) (string, *string, error)
+	LogsText(ctx context.Context, template models.Template, run models.Run, w http.ResponseWriter) error
+	Close() error
 }
 
 type Engines map[string]Engine

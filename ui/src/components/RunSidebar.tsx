@@ -2,10 +2,9 @@ import * as React from "react"
 import { get } from "lodash"
 import { Card } from "@blueprintjs/core"
 import JsonView from "react-json-view"
-import { ExecutionEngine, Run, ExecutableType } from "../types"
+import { Run, ExecutableType } from "../types"
 import EnvList from "./EnvList"
 import RunAttributes from "./RunAttributes"
-import RunDebugAttributes from "./RunDebugAttributes"
 import { JSON_VIEW_PROPS } from "../constants"
 
 const RunSidebar: React.FC<{ data: Run }> = ({ data }) => {
@@ -32,9 +31,6 @@ const RunSidebar: React.FC<{ data: Run }> = ({ data }) => {
         </div>
         <EnvList env={data.env} />
       </Card>
-      {data && data.engine === ExecutionEngine.EKS && (
-        <RunDebugAttributes data={data} />
-      )}
     </div>
   )
 }

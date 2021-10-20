@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"github.com/Masterminds/sprig"
 	"github.com/alienrobotwizard/flotilla-os/core/config"
 	"github.com/alienrobotwizard/flotilla-os/core/exceptions"
@@ -27,6 +28,7 @@ type ExecutionRequest struct {
 	CPU                   *int64                 `json:"cpu"`
 	GPU                   *int64                 `json:"gpu"`
 	Engine                *string                `json:"engine"`
+	EngineArgs            *json.RawMessage       `json:"engine_args,omitempty"`
 	ActiveDeadlineSeconds *int64                 `json:"active_deadline_seconds,omitempty"`
 	TemplatePayload       map[string]interface{} `json:"template_payload"`
 	DryRun                *bool                  `json:"dry_run,omitempty"`
@@ -93,7 +95,7 @@ func (es *executionService) Logs(ctx context.Context, runID string, lastSeen *st
 		if engine, err := es.engineForRun(run); err != nil {
 			return "", nil, err
 		} else {
-			return engine.Logs(tmpl, run, lastSeen)
+			return engine.Logs(ctx, tmpl, run, lastSeen)
 		}
 	}
 }
@@ -105,7 +107,7 @@ func (es *executionService) Terminate(ctx context.Context, runID string) error {
 		if engine, err := es.engineForRun(run); err != nil {
 			return err
 		} else {
-			return engine.Terminate(run)
+			return engine.Terminate(ctx, run)
 		}
 	}
 }
@@ -142,7 +144,9 @@ func (es *executionService) CreateTemplateRun(ctx context.Context, args *Executi
 		Memory:                args.Memory,
 		Cpu:                   args.CPU,
 		Gpu:                   args.GPU,
+		Env:                   args.Env,
 		Engine:                args.Engine,
+		EngineArgs:            args.EngineArgs,
 		TemplateID:            &tmpl.TemplateID,
 		ActiveDeadlineSeconds: args.ActiveDeadlineSeconds,
 	}
@@ -155,7 +159,7 @@ func (es *executionService) CreateTemplateRun(ctx context.Context, args *Executi
 	if run, err := es.sm.CreateRun(ctx, run); err != nil {
 		return run, err
 	} else {
-		if err = engine.Enqueue(run); err != nil {
+		if err = engine.Enqueue(ctx, run); err != nil {
 			return run, err
 		}
 		queued := time.Now()

@@ -1,5 +1,5 @@
 import * as React from "react"
-import {FastField, Field, Form, Formik} from "formik"
+import {FastField, Form, Formik} from "formik"
 import * as Yup from "yup"
 import {RouteComponentProps} from "react-router-dom"
 import {Button, Classes, FormGroup, Intent, Radio, RadioGroup, Spinner,} from "@blueprintjs/core"
@@ -7,19 +7,16 @@ import api from "../api"
 import {ExecutionEngine, Run, Template, TemplateExecutionRequest,} from "../types"
 import Request, {ChildProps as RequestChildProps, RequestStatus,} from "./Request"
 import EnvFieldArray from "./EnvFieldArray"
-import ClusterSelect from "./ClusterSelect"
 import {TemplateContext, TemplateCtx} from "./Template"
 import Toaster from "./Toaster"
 import ErrorCallout from "./ErrorCallout"
 import FieldError from "./FieldError"
-import NodeLifecycleSelect from "./NodeLifecycleSelect"
 import * as helpers from "../helpers/runFormHelpers"
 import JSONSchemaForm, {ArrayFieldTemplateProps, FieldTemplateProps,} from "react-jsonschema-form"
 
 const getInitialValuesForTemplateRun = (): TemplateExecutionRequest => {
   return {
     template_payload: {},
-    cluster: "",
     env: [],
     owner_id: "",
     memory: 512,
@@ -155,20 +152,9 @@ class RunForm extends React.Component<Props> {
                   label="Engine Type"
                   onChange={(evt: React.FormEvent<HTMLInputElement>) => {
                     setFieldValue("engine", evt.currentTarget.value)
-
-                    if (evt.currentTarget.value === ExecutionEngine.EKS) {
-                      setFieldValue(
-                        "cluster",
-                        process.env.REACT_APP_EKS_CLUSTER_NAME || ""
-                      )
-                    } else if (getEngine() === ExecutionEngine.EKS || getEngine() === ExecutionEngine.LOCAL) {
-                      setFieldValue("cluster", "")
-                    }
                   }}
                   selectedValue={values.engine}
                 >
-                  <Radio label="EKS" value={ExecutionEngine.EKS} />
-                  <Radio label="ECS" value={ExecutionEngine.ECS} />
                   <Radio label="ECS" value={ExecutionEngine.LOCAL} />
                 </RadioGroup>
                 <div className="flotilla-form-section-divider" />
@@ -178,24 +164,6 @@ class RunForm extends React.Component<Props> {
                 "FastField" as it needs to re-render when value.engine is
                 updated.
               */}
-                {getEngine() !== ExecutionEngine.EKS && getEngine() !== ExecutionEngine.LOCAL && (
-                  <FormGroup
-                    label="Cluster"
-                    helperText="Select a cluster for this task to execute on."
-                  >
-                    <Field
-                      name="cluster"
-                      component={ClusterSelect}
-                      value={values.cluster}
-                      onChange={(value: string) => {
-                        setFieldValue("cluster", value)
-                      }}
-                    />
-                    {errors.cluster && (
-                      <FieldError>{errors.cluster}</FieldError>
-                    )}
-                  </FormGroup>
-                )}
 
                 {/* CPU Field */}
                 <FormGroup

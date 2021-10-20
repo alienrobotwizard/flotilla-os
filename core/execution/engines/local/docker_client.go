@@ -10,6 +10,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
+	"github.com/pkg/errors"
 	"io"
 	"os"
 	"time"
@@ -46,7 +47,7 @@ func (dc *dockerClient) Execute(ctx context.Context, run models.Run) (containerI
 
 	var env []string
 	if run.Env != nil {
-		env := make([]string, len(*run.Env))
+		env = make([]string, len(*run.Env))
 		for i, ev := range *run.Env {
 			env[i] = fmt.Sprintf("%s=%s", ev.Name, ev.Value)
 		}
@@ -106,7 +107,11 @@ func (dc *dockerClient) Info(ctx context.Context, run models.Run) (types.Contain
 
 func (dc *dockerClient) Logs(ctx context.Context, run models.Run, lastSeen *string) (string, *string, error) {
 	containerID, err := dc.getContainerID(ctx, run)
+	since := time.Now().Format(time.RFC3339)
 	if err != nil {
+		if errors.Is(err, engines.ErrNotFound) {
+			return "", &since, nil
+		}
 		return "", nil, err
 	}
 
@@ -116,7 +121,7 @@ func (dc *dockerClient) Logs(ctx context.Context, run models.Run, lastSeen *stri
 	}
 
 	out, err := dc.cli.ContainerLogs(ctx, containerID, logOpts)
-	since := time.Now().Format(time.RFC3339)
+
 	if err != nil {
 		return "", nil, err
 	}

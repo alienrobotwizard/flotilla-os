@@ -7,33 +7,22 @@ import {
   NavbarGroup,
   Alignment,
   Classes,
-  Tag,
-  Intent,
 } from "@blueprintjs/core"
-import SettingsButton from "./SettingsButton"
 
 const Navigation: React.FunctionComponent = () => (
   <Navbar fixedToTop className="bp3-dark">
     <NavbarGroup align={Alignment.LEFT}>
-      <Link to="/tasks" className="bp3-button bp3-minimal">
+      <Link to="/templates" className="bp3-button bp3-minimal">
         Flotilla
       </Link>
       <NavbarDivider />
       <ButtonGroup className={Classes.MINIMAL}>
         <NavLink
-          to="/tasks"
-          className={Classes.BUTTON}
-          activeClassName={Classes.ACTIVE}
-        >
-          Tasks
-        </NavLink>
-        <NavLink
           to="/templates"
           className={Classes.BUTTON}
           activeClassName={Classes.ACTIVE}
         >
-          <span>Templates</span>
-          <Tag intent={Intent.DANGER}>New!</Tag>
+          Templates
         </NavLink>
         <NavLink
           to="/runs"
@@ -42,11 +31,6 @@ const Navigation: React.FunctionComponent = () => (
         >
           Runs
         </NavLink>
-      </ButtonGroup>
-    </NavbarGroup>
-    <NavbarGroup align={Alignment.RIGHT}>
-      <ButtonGroup>
-        <SettingsButton />
       </ButtonGroup>
     </NavbarGroup>
   </Navbar>

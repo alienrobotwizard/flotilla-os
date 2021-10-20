@@ -118,13 +118,7 @@ export const TemplateHistoryTable: React.FunctionComponent<Props> = ({
                 ></ISO8601AttributeValue>
               ),
               isSortable: true,
-            },
-            cluster: {
-              displayName: "Cluster",
-              render: (r: Run) =>
-                r.engine === ExecutionEngine.EKS ? "-" : r.cluster,
-              isSortable: false,
-            },
+            }
           }}
         />
       )

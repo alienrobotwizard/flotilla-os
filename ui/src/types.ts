@@ -35,6 +35,7 @@ export type Run = {
   cpu: number
   cpu_limit: number
   definition_id: string
+  template_id: string
   env: Env[]
   exit_code?: number
   exit_reason?: string
@@ -175,12 +176,10 @@ export type UpdateTaskPayload = {
 }
 
 export enum ExecutionEngine {
-  ECS = "ecs",
-  EKS = "eks",
   LOCAL = "local",
 }
 
-export const DefaultExecutionEngine = ExecutionEngine.EKS
+export const DefaultExecutionEngine = ExecutionEngine.LOCAL
 
 export enum NodeLifecycle {
   SPOT = "spot",
@@ -282,13 +281,11 @@ export type TemplateExecutionRequest = {
 } & ExecutionRequestCommon
 
 export type ExecutionRequestCommon = {
-  cluster: string
   command?: string
   cpu?: number
   engine: ExecutionEngine
   env?: Env[]
   memory?: number
-  node_lifecycle?: NodeLifecycle
   owner_id: string
 }
 export type CloudtrailRecord = {

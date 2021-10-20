@@ -2,6 +2,7 @@ package workers
 
 import (
 	"context"
+	"fmt"
 	"github.com/alienrobotwizard/flotilla-os/core/config"
 	"github.com/alienrobotwizard/flotilla-os/core/exceptions"
 	"github.com/alienrobotwizard/flotilla-os/core/execution/engines"
@@ -29,7 +30,7 @@ func NewSubmitWorker(c *config.Config, sm state.Manager, engine engines.Engine) 
 		sm:           sm,
 		engine:       engine,
 		pollInterval: pollInterval,
-		logger:       log.New(os.Stderr, "SubmitWorker: ", log.LstdFlags),
+		logger:       log.New(os.Stderr, fmt.Sprintf("%s SubmitWorker: ", engine.Name()), log.LstdFlags),
 	}, nil
 }
 
@@ -51,7 +52,7 @@ func (sw *SubmitWorker) Run(ctx context.Context) error {
 }
 
 func (sw *SubmitWorker) runOnce(ctx context.Context) {
-	err := sw.engine.Poll(func(run models.Run) (shouldAck bool, err error) {
+	err := sw.engine.Poll(ctx, func(run models.Run) (shouldAck bool, err error) {
 		sw.logger.Printf("Processing run: [%s]\n", run.RunID)
 		run, err = sw.sm.GetRun(ctx, run.RunID)
 		if err != nil {
@@ -64,11 +65,12 @@ func (sw *SubmitWorker) runOnce(ctx context.Context) {
 			if err != nil {
 				return true, err
 			}
-			launched, err := sw.engine.Execute(run)
+			launched, err := sw.engine.Execute(ctx, run)
 			if err != nil {
 				if !errors.Is(err, exceptions.ErrRetryable) {
 					launched.Status = models.StatusStopped
 					launched.RunExceptions = &models.RunExceptions{err.Error()}
+					return true, nil
 				} else {
 					return false, nil
 				}
@@ -77,7 +79,10 @@ func (sw *SubmitWorker) runOnce(ctx context.Context) {
 				return true, err
 			}
 			return true, nil
+		} else if run.Status == models.StatusStopped {
+			return true, nil
 		}
+
 		sw.logger.Printf("Received run: [%s] with non-queued status [%s], not-acking\n", run.RunID, run.Status)
 		return false, nil
 	})

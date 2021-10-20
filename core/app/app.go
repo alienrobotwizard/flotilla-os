@@ -31,7 +31,7 @@ type App struct {
 	appShutdown        context.CancelFunc
 }
 
-func NewApp(c *config.Config, extraEngines ...engines.Engine) (App, error) {
+func NewApp(ctx context.Context, c *config.Config, extraEngines ...engines.Engine) (App, error) {
 	var (
 		app App
 		es  services.ExecutionService
@@ -41,13 +41,13 @@ func NewApp(c *config.Config, extraEngines ...engines.Engine) (App, error) {
 		err error
 	)
 
-	app.appContext, app.appShutdown = context.WithCancel(context.Background())
+	app.appContext, app.appShutdown = context.WithCancel(ctx)
 	sm, err := state.NewSQLManager(app.appContext, c)
 	if err != nil {
 		return app, err
 	}
 
-	engine, err := local.NewLocalEngine(app.appContext, c)
+	engine, err := local.NewLocalEngine(c)
 	if err != nil {
 		return app, err
 	}
@@ -59,8 +59,20 @@ func NewApp(c *config.Config, extraEngines ...engines.Engine) (App, error) {
 	}
 
 	for _, otherEngine := range extraEngines {
-		engineMap[otherEngine.Name()] = engine
+		engineMap[otherEngine.Name()] = otherEngine
 	}
+
+	//
+	// Ensure all engines can actually clean up properly
+	//
+	go func(ctx context.Context, em map[string]engines.Engine) {
+		select {
+		case <-ctx.Done():
+			for _, eng := range em {
+				eng.Close()
+			}
+		}
+	}(app.appContext, engineMap)
 
 	if es, err = services.NewExecutionService(c, sm, engineMap); err != nil {
 		return app, errors.Wrap(err, "problem initializing execution service")

@@ -15,38 +15,44 @@ func NewRunID(engine *string) string {
 }
 
 type Run struct {
-	RunID                 string         `json:"run_id" gorm:"primaryKey; type:varchar"`
-	TemplateID            *string        `json:"template_id,omitempty" gorm:"type:varchar"`
-	Template              *Template      `json:"-" gorm:"references:TemplateID"`
-	Alias                 string         `json:"alias" gorm:"type:varchar"`
-	Image                 string         `json:"image" gorm:"type:varchar"`
-	ClusterName           string         `json:"cluster" gorm:"type:varchar"`
-	ExitCode              *int64         `json:"exit_code,omitempty"`
-	Status                RunStatus      `json:"status" gorm:"type:varchar"`
-	QueuedAt              *time.Time     `json:"queued_at,omitempty"`
-	StartedAt             *time.Time     `json:"started_at,omitempty"`
-	FinishedAt            *time.Time     `json:"finished_at,omitempty"`
-	InstanceID            string         `json:"-" gorm:"type:varchar"`
-	InstanceDNSName       string         `json:"-" gorm:"type:varchar"`
-	GroupName             string         `json:"group_name" gorm:"type:varchar"`
-	Env                   *EnvList       `json:"env,omitempty" gorm:"type:jsonb; index:,type:gin"`
-	Command               *string        `json:"command,omitempty"`
-	CommandHash           *string        `json:"command_hash,omitempty"`
-	Memory                *int64         `json:"memory,omitempty"`
-	MemoryLimit           *int64         `json:"memory_limit,omitempty"`
-	Cpu                   *int64         `json:"cpu,omitempty"`
-	CpuLimit              *int64         `json:"cpu_limit,omitempty"`
-	Gpu                   *int64         `json:"gpu,omitempty"`
-	ExitReason            *string        `json:"exit_reason,omitempty"`
-	Engine                *string        `json:"engine,omitempty"`
-	NodeLifecycle         *string        `json:"node_lifecycle,omitempty"`
-	EphemeralStorage      *int64         `json:"ephemeral_storage,omitempty"`
-	MaxMemoryUsed         *int64         `json:"max_memory_used,omitempty"`
-	MaxCpuUsed            *int64         `json:"max_cpu_used,omitempty"`
-	AttemptCount          *int64         `json:"attempt_count,omitempty"`
-	SpawnedRuns           *SpawnedRuns   `json:"spawned_runs,omitempty" gorm:"type:jsonb"`
-	RunExceptions         *RunExceptions `json:"run_exceptions,omitempty" gorm:"type:jsonb"`
-	ActiveDeadlineSeconds *int64         `json:"active_deadline_seconds,omitempty"`
+	RunID           string     `json:"run_id" gorm:"primaryKey; type:varchar"`
+	TemplateID      *string    `json:"template_id,omitempty" gorm:"type:varchar"`
+	TemplateName    string     `json:"template_name" gorm:"type:varchar"`
+	Template        *Template  `json:"-" gorm:"references:TemplateID"`
+	Image           string     `json:"image" gorm:"type:varchar"`
+	ExitCode        *int64     `json:"exit_code,omitempty"`
+	Status          RunStatus  `json:"status" gorm:"type:varchar"`
+	QueuedAt        *time.Time `json:"queued_at,omitempty"`
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	FinishedAt      *time.Time `json:"finished_at,omitempty"`
+	InstanceID      string     `json:"-" gorm:"type:varchar"`
+	InstanceDNSName string     `json:"-" gorm:"type:varchar"`
+	GroupName       string     `json:"group_name" gorm:"type:varchar"`
+	Env             *EnvList   `json:"env,omitempty" gorm:"type:jsonb; index:,type:gin"`
+	Command         *string    `json:"command,omitempty"`
+	CommandHash     *string    `json:"command_hash,omitempty"`
+	Memory          *int64     `json:"memory,omitempty"`
+	MemoryLimit     *int64     `json:"memory_limit,omitempty"`
+	Cpu             *int64     `json:"cpu,omitempty"`
+	CpuLimit        *int64     `json:"cpu_limit,omitempty"`
+	Gpu             *int64     `json:"gpu,omitempty"`
+	ExitReason      *string    `json:"exit_reason,omitempty"`
+	Engine          *string    `json:"engine,omitempty"`
+	//
+	// Allows for engine specific args to be passed into the run; this is highly variable depending on
+	// the specific engine implementation and can look like such things as:
+	// * cluster
+	// * namespace
+	// * nodepool
+	// etc
+	EngineArgs            *json.RawMessage `json:"engine_args,omitempty" gorm:"type:jsonb"`
+	EphemeralStorage      *int64           `json:"ephemeral_storage,omitempty"`
+	MaxMemoryUsed         *int64           `json:"max_memory_used,omitempty"`
+	MaxCpuUsed            *int64           `json:"max_cpu_used,omitempty"`
+	AttemptCount          *int64           `json:"attempt_count,omitempty"`
+	SpawnedRuns           *SpawnedRuns     `json:"spawned_runs,omitempty" gorm:"type:jsonb"`
+	RunExceptions         *RunExceptions   `json:"run_exceptions,omitempty" gorm:"type:jsonb"`
+	ActiveDeadlineSeconds *int64           `json:"active_deadline_seconds,omitempty"`
 }
 
 func (r *Run) BeforeCreate(tx *gorm.DB) (err error) {

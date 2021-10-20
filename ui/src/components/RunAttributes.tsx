@@ -1,6 +1,6 @@
 import * as React from "react"
 import { Card, Pre, Tag } from "@blueprintjs/core"
-import { Run, ExecutionEngine } from "../types"
+import { Run } from "../types"
 import Attribute from "./Attribute"
 import ISO8601AttributeValue from "./ISO8601AttributeValue"
 
@@ -11,18 +11,8 @@ const RunAttributes: React.FC<{ data: Run }> = ({ data }) => (
       style={{ marginBottom: 12 }}
     >
       <Attribute name="Engine Type" value={<Tag>{data.engine}</Tag>} />
-      {data.engine !== ExecutionEngine.EKS && (
-        <Attribute name="Cluster" value={data.cluster} />
-      )}
-      <Attribute
-        name="Node Lifecycle"
-        value={<Tag>{data.node_lifecycle || "-"}</Tag>}
-      />
     </div>
     <div className="flotilla-form-section-divider" />
-
-
-
 
       <div className="flotilla-attributes-container flotilla-attributes-container-horizontal">
         {data.max_cpu_used && <Attribute
@@ -94,10 +84,10 @@ const RunAttributes: React.FC<{ data: Run }> = ({ data }) => (
         rawValue={data.run_id}
       />
       <Attribute
-        name="Definition ID"
-        value={data.definition_id}
+        name="Template ID"
+        value={data.template_id}
         isCopyable
-        rawValue={data.definition_id}
+        rawValue={data.template_id}
       />
       <Attribute name="Image" value={data.image} />
       <Attribute

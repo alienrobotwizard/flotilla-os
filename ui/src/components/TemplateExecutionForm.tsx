@@ -21,12 +21,10 @@ import Request, {
   RequestStatus,
 } from "./Request"
 import EnvFieldArray from "./EnvFieldArray"
-import ClusterSelect from "./ClusterSelect"
 import { TemplateContext, TemplateCtx } from "./Template"
 import Toaster from "./Toaster"
 import ErrorCallout from "./ErrorCallout"
 import FieldError from "./FieldError"
-import NodeLifecycleSelect from "./NodeLifecycleSelect"
 import * as helpers from "../helpers/runFormHelpers"
 import { getInitialValuesForTemplateExecutionForm } from "../helpers/getInitialValuesForExecutionForm"
 
@@ -46,8 +44,8 @@ const validationSchema = Yup.object().shape({
     })
   ),
   engine: Yup.string()
-    .matches(/(eks|ecs|local)/)
-    .required("A valid engine type of ecs, eks, or local must be set."),
+    .matches(/(local)/)
+    .required("A valid engine type of local must be set."),
   template_payload: Yup.object().required("Template payload is required."),
 })
 
@@ -106,20 +104,9 @@ const TemplateExecutionForm: React.FC<Props> = ({
                 label="Engine Type"
                 onChange={(evt: React.FormEvent<HTMLInputElement>) => {
                   setFieldValue("engine", evt.currentTarget.value)
-
-                  if (evt.currentTarget.value === ExecutionEngine.EKS) {
-                    setFieldValue(
-                      "cluster",
-                      process.env.REACT_APP_EKS_CLUSTER_NAME || ""
-                    )
-                  } else if (getEngine() === ExecutionEngine.EKS || getEngine() === ExecutionEngine.LOCAL) {
-                    setFieldValue("cluster", "")
-                  }
                 }}
                 selectedValue={values.engine}
               >
-                <Radio label="EKS" value={ExecutionEngine.EKS} />
-                <Radio label="ECS" value={ExecutionEngine.ECS} />
                 <Radio label="LOCAL" value={ExecutionEngine.LOCAL} />
               </RadioGroup>
             </FormGroup>
@@ -128,22 +115,6 @@ const TemplateExecutionForm: React.FC<Props> = ({
                 "FastField" as it needs to re-render when value.engine is
                 updated.
             */}
-            {getEngine() !== ExecutionEngine.EKS && getEngine() !== ExecutionEngine.LOCAL && (
-              <FormGroup
-                label="Cluster"
-                helperText="Select a cluster for this task to execute on."
-              >
-                <Field
-                  name="cluster"
-                  component={ClusterSelect}
-                  value={values.cluster}
-                  onChange={(value: string) => {
-                    setFieldValue("cluster", value)
-                  }}
-                />
-                {errors.cluster && <FieldError>{errors.cluster}</FieldError>}
-              </FormGroup>
-            )}
             {/* CPU Field */}
             <FormGroup
               label={helpers.cpuFieldSpec.label}

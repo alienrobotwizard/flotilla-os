@@ -25,6 +25,7 @@ http:
         listen_address: ':3000'
         cors_allowed_origins:
             - 'http://localhost:3001'
+
 owner_id_var: FLOTILLA_RUN_OWNER_ID
 eks:
     cluster_override: ["clusta"]
@@ -40,3 +41,14 @@ metrics:
     namespace: my.flotilla.namespace
     tags:
       - test
+
+worker:
+  manager_interval: 1s
+  status_interval: 1s
+  retry_interval: 1s
+  submit_interval: 1s
+
+engine:
+  kubernetes:
+    amqp_queue: cupcake
+    amqp_dsn: amqp://localhost:5672

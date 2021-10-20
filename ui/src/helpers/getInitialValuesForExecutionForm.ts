@@ -15,20 +15,6 @@ import {
 } from "../types"
 import constructDefaultObjectFromJsonSchema from "./constructDefaultObjectFromJsonSchema"
 
-export function getInitialValuesForTaskExecutionForm(
-  t: Task,
-  r: Run | null
-): LaunchRequestV2 {
-  const common = getInitialValuesForCommonExecutionFields(t, r)
-
-  // Set command value.
-  const command: string = r && r.command ? r.command : t.command
-
-  common.command = command
-
-  return common
-}
-
 export function getInitialValuesForTemplateExecutionForm(
   t: Template,
   r: Run | null
@@ -79,30 +65,12 @@ function getInitialValuesForCommonExecutionFields(
   // Set engine.
   const engine: ExecutionEngine = get(r, "engine", DefaultExecutionEngine)
 
-  switch (engine) {
-    case ExecutionEngine.ECS:
+
       return {
-        cluster: get(r, "cluster", ""),
         env,
         cpu,
         memory,
         owner_id: ownerID,
         engine,
       }
-    case ExecutionEngine.EKS:
-    default:
-      return {
-        cluster: get(
-          r,
-          "cluster",
-          process.env.REACT_APP_EKS_CLUSTER_NAME || ""
-        ),
-        node_lifecycle: get(r, "node_lifecycle", DefaultNodeLifecycle),
-        env,
-        cpu,
-        memory,
-        owner_id: ownerID,
-        engine,
-      }
-  }
 }

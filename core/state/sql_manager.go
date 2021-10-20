@@ -156,6 +156,10 @@ func (m *SQLManager) ListRuns(ctx context.Context, args *ListRunsArgs) (models.R
 		q = m.applyEnvFilters(q, *args.EnvFilters)
 	}
 
+	if args.Engines != nil {
+		q = q.Where("engine in ?", *args.Engines)
+	}
+
 	q.Count(&lr.Total)
 
 	q = q.Limit(args.GetLimit()).Offset(args.GetOffset())
@@ -163,7 +167,7 @@ func (m *SQLManager) ListRuns(ctx context.Context, args *ListRunsArgs) (models.R
 		q = q.Order(fmt.Sprintf("%s %s", *args.SortBy, args.GetOrder()))
 	}
 	if q = q.Find(&lr.Runs); q.Error != nil {
-		return lr, errors.Wrap(q.Error, "problem listing templates")
+		return lr, errors.Wrap(q.Error, "problem listing runs")
 	} else {
 		return lr, nil
 	}

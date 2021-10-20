@@ -22,9 +22,7 @@ import api from "../api"
 import {
   Run as RunShape,
   RunStatus,
-  ExecutionEngine,
   RunTabId,
-  ExecutableType,
   EnhancedRunStatusEmojiMap,
   EnhancedRunStatus,
 } from "../types"
@@ -33,8 +31,6 @@ import ViewHeader from "./ViewHeader"
 import { RUN_FETCH_INTERVAL_MS } from "../constants"
 import Toggler from "./Toggler"
 import LogRequesterCloudWatchLogs from "./LogRequesterCloudWatchLogs"
-import LogRequesterS3 from "./LogRequesterS3"
-import RunEvents from "./RunEvents"
 import QueryParams, { ChildProps as QPChildProps } from "./QueryParams"
 import { RUN_TAB_ID_QUERY_KEY } from "../constants"
 import Attribute from "./Attribute"
@@ -45,7 +41,6 @@ import RunSidebar from "./RunSidebar"
 import Helmet from "react-helmet"
 import AutoscrollSwitch from "./AutoscrollSwitch"
 import { RootState } from "../state/store"
-import CloudtrailRecords from "./CloudtrailRecords"
 import getEnhancedRunStatus from "../helpers/getEnhancedRunStatus"
 
 const connected = connect((state: RootState) => state.runView)
@@ -118,14 +113,6 @@ export class Run extends React.Component<Props> {
         return RunTabId.LOGS
       }
 
-      if (
-        data &&
-        data.engine === ExecutionEngine.EKS &&
-        data.status !== RunStatus.STOPPED
-      ) {
-        return RunTabId.EVENTS
-      }
-
       return RunTabId.LOGS
     }
 
@@ -139,12 +126,7 @@ export class Run extends React.Component<Props> {
   getExecutableLinkName(): string {
     const { data } = this.props
     if (data) {
-      switch (data.executable_type) {
-        case ExecutableType.ExecutableTypeDefinition:
-          return data.alias
-        case ExecutableType.ExecutableTypeTemplate:
-          return data.executable_id
-      }
+      return data.template_id
     }
     return ""
   }
@@ -152,12 +134,7 @@ export class Run extends React.Component<Props> {
   getExecutableLinkURL(): string {
     const { data } = this.props
     if (data) {
-      switch (data.executable_type) {
-        case ExecutableType.ExecutableTypeDefinition:
-          return `/tasks/${data.definition_id}`
-        case ExecutableType.ExecutableTypeTemplate:
-          return `/templates/${data.executable_id}`
-      }
+      return `/templates/${data.template_id}`
     }
     return ""
   }
@@ -170,12 +147,6 @@ export class Run extends React.Component<Props> {
         return <ErrorCallout error={error} />
       case RequestStatus.READY:
         if (data) {
-          const cloudtrailRecords = get(
-            data,
-            ["cloudtrail_notifications", "Records"],
-            null
-          )
-          const hasCloudtrailRecords = cloudtrailRecords !== null
           let btn: React.ReactNode = null
 
           if (data.status === RunStatus.STOPPED) {
@@ -269,64 +240,10 @@ export class Run extends React.Component<Props> {
                           id={RunTabId.LOGS}
                           title="Container Logs"
                           panel={
-                            data.engine === ExecutionEngine.EKS ? (
-                              <LogRequesterS3
+                            <LogRequesterCloudWatchLogs
                                 runID={data.run_id}
                                 status={data.status}
-                              />
-                            ) : (
-                              <LogRequesterCloudWatchLogs
-                                runID={data.run_id}
-                                status={data.status}
-                              />
-                            )
-                          }
-                        />
-                        <Tab
-                          id={RunTabId.EVENTS}
-                          title={
-                            data.engine !== ExecutionEngine.EKS ? (
-                              <Tooltip content="Run events are only available for tasks run on EKS.">
-                                EKS Pod Events
-                              </Tooltip>
-                            ) : (
-                              "EKS Pod Events"
-                            )
-                          }
-                          panel={
-                            <RunEvents
-                              runID={data.run_id}
-                              status={data.status}
-                              hasLogs={this.props.hasLogs}
                             />
-                          }
-                          disabled={data.engine !== ExecutionEngine.EKS}
-                        />
-                        <Tab
-                          id={RunTabId.CLOUDTRAIL}
-                          title={
-                            data.engine !== ExecutionEngine.EKS ? (
-                              <Tooltip content="Cloudtrail records are only available for tasks run on EKS.">
-                                Cloudtrail Records
-                              </Tooltip>
-                            ) : (
-                              `EKS Cloudtrail Records (${
-                                hasCloudtrailRecords
-                                  ? get(
-                                      data,
-                                      ["cloudtrail_notifications", "Records"],
-                                      []
-                                    ).length
-                                  : 0
-                              })`
-                            )
-                          }
-                          panel={
-                            <CloudtrailRecords data={cloudtrailRecords || []} />
-                          }
-                          disabled={
-                            data.engine !== ExecutionEngine.EKS ||
-                            hasCloudtrailRecords === false
                           }
                         />
                       </Tabs>

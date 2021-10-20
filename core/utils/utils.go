@@ -59,3 +59,13 @@ func StringP(v string) *string {
 func IntP(v int) *int {
 	return &v
 }
+
+func Int64P(v int) *int64 {
+	x := int64(v)
+	return &x
+}
+
+func Int32P(v int) *int32 {
+	x := int32(v)
+	return &x
+}
