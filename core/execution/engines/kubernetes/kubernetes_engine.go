@@ -8,9 +8,11 @@ import (
 	"github.com/alienrobotwizard/flotilla-os/core/exceptions"
 	"github.com/alienrobotwizard/flotilla-os/core/execution/engines"
 	"github.com/alienrobotwizard/flotilla-os/core/state/models"
+	"github.com/alienrobotwizard/flotilla-os/core/utils"
 	"github.com/pkg/errors"
 	"github.com/streadway/amqp"
 	"io"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,6 +39,10 @@ var (
 	amqpDSNKey    = "engine.kubernetes.amqp_dsn"
 	imagePullKey  = "engine.kubernetes.image_pull_secrets"
 	configPathKey = "engine.kubernetes.kubeconf"
+)
+
+var (
+	PodMissing = errors.New("Pod for job not found, most likely cleaned up")
 )
 
 func newKubeClient(configPath string) (*kubernetes.Clientset, error) {
@@ -122,13 +128,19 @@ func (e *Engine) Terminate(ctx context.Context, run models.Run) error {
 		return err
 	}
 
-	gracePeriod := int64(300)
-	deletionPropagation := metav1.DeletePropagationBackground
+	// We "stop" the job by setting the parallelism to zero
+	job := batchv1.Job{
+		Spec: batchv1.JobSpec{
+			Parallelism: utils.Int32P(0),
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      run.RunID,
+			Namespace: opts.GetNamespace(),
+		},
+	}
 
-	return e.kClient.BatchV1().Jobs(opts.GetNamespace()).Delete(ctx, run.RunID, metav1.DeleteOptions{
-		GracePeriodSeconds: &gracePeriod,
-		PropagationPolicy:  &deletionPropagation,
-	})
+	_, err = e.kClient.BatchV1().Jobs(opts.GetNamespace()).Update(ctx, &job, metav1.UpdateOptions{})
+	return err
 }
 
 func (e *Engine) Execute(ctx context.Context, run models.Run) (models.Run, error) {
@@ -203,6 +215,10 @@ func (e *Engine) getJobPod(ctx context.Context, namespace string, runID string) 
 	if listed != nil && listed.Items != nil && len(listed.Items) > 0 {
 		pod = listed.Items[len(listed.Items)-1]
 	}
+
+	if len(pod.Name) == 0 {
+		return pod, PodMissing
+	}
 	return pod, nil
 }
 
@@ -230,10 +246,12 @@ func (e *Engine) UpdateMetrics(ctx context.Context, run models.Run) (models.Run,
 
 func (e *Engine) Logs(
 	ctx context.Context, template models.Template, run models.Run, lastSeen *string) (string, *string, error) {
+
 	opts, err := e.adapter.GetRunOpts(run)
 	if err != nil {
 		return "", nil, err
 	}
+
 	pod, err := e.getJobPod(ctx, opts.GetNamespace(), run.RunID)
 	if err != nil {
 		return "", nil, err

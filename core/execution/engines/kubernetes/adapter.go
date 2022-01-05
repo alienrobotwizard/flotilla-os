@@ -193,9 +193,8 @@ func (a *Adapter) RunToJob(run models.Run) (batchv1.Job, error) {
 	}
 
 	spec := batchv1.JobSpec{
-		Parallelism:             utils.Int32P(1),
-		BackoffLimit:            utils.Int32P(0),
-		TTLSecondsAfterFinished: utils.Int32P(60),
+		Parallelism:  utils.Int32P(1),
+		BackoffLimit: utils.Int32P(0),
 		Template: corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
 				Annotations: annotations,
