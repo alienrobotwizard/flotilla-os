@@ -16,11 +16,18 @@ import (
 )
 
 type RunOpts struct {
-	Secrets            []string          `json:"secrets"`
-	NoEntrypoint       bool              `json:"no_entrypoint"`
-	NodeSelectors      map[string]string `json:"node_selectors"`
-	Namespace          *string           `json:"namespace,omitempty"`
-	ServiceAccountName *string           `json:"service_account_name,omitempty"`
+	Secrets            []string           `json:"secrets"`
+	NoEntrypoint       bool               `json:"no_entrypoint"`
+	NodeSelectors      map[string]string  `json:"node_selectors"`
+	Namespace          *string            `json:"namespace,omitempty"`
+	ServiceAccountName *string            `json:"service_account_name,omitempty"`
+	VolumeSecrets      []VolumeSecretOpts `json:"volume_secrets"`
+}
+
+type VolumeSecretOpts struct {
+	Name       string `json:"name"`
+	SecretName string `json:"secret_name"`
+	MountPath  string `json:"mount_path"`
 }
 
 func (o RunOpts) GetNamespace() string {
@@ -140,14 +147,7 @@ func (a *Adapter) RunToJob(run models.Run) (batchv1.Job, error) {
 		Image:           run.Image,
 		ImagePullPolicy: corev1.PullAlways,
 		Env:             env,
-		//VolumeMounts: []corev1.VolumeMount{
-		//	{
-		//		Name:      "flotilla-secrets-vol",
-		//		ReadOnly:  true,
-		//		MountPath: "/flotilla/secrets",
-		//	},
-		//},
-		Resources: a.handleResourceRequirements(run),
+		Resources:       a.handleResourceRequirements(run),
 	}
 
 	if opts.NoEntrypoint {
@@ -163,10 +163,30 @@ func (a *Adapter) RunToJob(run models.Run) (batchv1.Job, error) {
 		ImagePullSecrets: []corev1.LocalObjectReference{
 			{Name: a.imagePullSecrets},
 		},
-
-		Containers:   []corev1.Container{container},
 		NodeSelector: opts.NodeSelectors,
 	}
+
+	if opts.VolumeSecrets != nil && len(opts.VolumeSecrets) > 0 {
+		for _, vs := range opts.VolumeSecrets {
+			podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
+				Name: vs.Name,
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName:  vs.SecretName,
+						DefaultMode: utils.Int32P(0600),
+					},
+				},
+			})
+
+			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+				Name:      vs.Name,
+				ReadOnly:  true,
+				MountPath: vs.MountPath,
+			})
+		}
+	}
+
+	podSpec.Containers = []corev1.Container{container}
 
 	if opts.ServiceAccountName != nil {
 		podSpec.ServiceAccountName = *opts.ServiceAccountName
