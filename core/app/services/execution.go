@@ -137,6 +137,15 @@ func (es *executionService) CreateTemplateRun(ctx context.Context, args *Executi
 		}
 	}
 
+	env := tmpl.Env
+	if args.Env != nil {
+		if env != nil {
+			env = env.Merge(args.Env)
+		} else {
+			env = args.Env
+		}
+	}
+
 	run = models.Run{
 		Image:                 tmpl.Image,
 		Status:                models.StatusQueued,
@@ -144,7 +153,7 @@ func (es *executionService) CreateTemplateRun(ctx context.Context, args *Executi
 		Memory:                args.Memory,
 		Cpu:                   args.CPU,
 		Gpu:                   args.GPU,
-		Env:                   args.Env,
+		Env:                   env,
 		Engine:                args.Engine,
 		EngineArgs:            args.EngineArgs,
 		TemplateID:            &tmpl.TemplateID,

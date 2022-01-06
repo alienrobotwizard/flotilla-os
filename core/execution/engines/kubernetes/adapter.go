@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"strings"
 	"time"
 )
 
@@ -125,9 +126,11 @@ func (a *Adapter) RunToJob(run models.Run) (batchv1.Job, error) {
 		cmd = *run.Command
 	}
 
-	cmdSlice := []string{cmd}
-	if !opts.NoEntrypoint {
-		cmdSlice = append([]string{"bash", "-l", "-cex"}, cmdSlice...)
+	var cmdSlice []string
+	if opts.NoEntrypoint {
+		cmdSlice = strings.Split(cmd, " ")
+	} else {
+		cmdSlice = []string{"bash", "-l", "-cex", cmd}
 	}
 
 	var env []corev1.EnvVar

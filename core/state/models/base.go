@@ -15,6 +15,30 @@ type EnvVar struct {
 
 type EnvList []EnvVar
 
+func (e *EnvList) ToMap() map[string]EnvVar {
+	m := make(map[string]EnvVar, len(*e))
+	for _, v := range *e {
+		m[v.Name] = v
+	}
+	return m
+}
+
+func (e *EnvList) Merge(toMerge *EnvList) *EnvList {
+	self := []EnvVar(*e)
+	other := []EnvVar(*toMerge)
+	together := append(self, other...)
+	m := make(map[string]EnvVar)
+	for _, v := range together {
+		m[v.Name] = v
+	}
+
+	var merged EnvList
+	for _, v := range m {
+		merged = append(merged, v)
+	}
+	return &merged
+}
+
 func (e *EnvList) Scan(value interface{}) error {
 	if value != nil {
 		s := value.([]byte)

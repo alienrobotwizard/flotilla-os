@@ -88,6 +88,10 @@ func (m *SQLManager) ListTemplates(ctx context.Context, args *ListArgs) (models.
 	var lr models.TemplateList
 
 	q := m.db.WithContext(ctx).Model(&models.Template{})
+	if args.Filters != nil {
+		q = m.applyFilters(q, args.Filters)
+	}
+
 	q.Count(&lr.Total)
 
 	q = q.Limit(args.GetLimit()).Offset(args.GetOffset())

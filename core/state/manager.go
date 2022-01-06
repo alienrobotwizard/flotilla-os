@@ -14,10 +14,10 @@ var (
 )
 
 type ListArgs struct {
-	Limit   *int
-	Offset  *int
-	SortBy  *string
-	Order   *string
+	Limit   *int    `form:"limit"`
+	Offset  *int    `form:"offset"`
+	SortBy  *string `form:"sort_by"`
+	Order   *string `form:"order"`
 	Filters map[string][]string
 }
 

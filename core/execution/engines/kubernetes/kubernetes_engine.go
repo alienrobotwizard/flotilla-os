@@ -8,14 +8,13 @@ import (
 	"github.com/alienrobotwizard/flotilla-os/core/exceptions"
 	"github.com/alienrobotwizard/flotilla-os/core/execution/engines"
 	"github.com/alienrobotwizard/flotilla-os/core/state/models"
-	"github.com/alienrobotwizard/flotilla-os/core/utils"
 	"github.com/pkg/errors"
 	"github.com/streadway/amqp"
 	"io"
-	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	"k8s.io/client-go/tools/clientcmd"
@@ -39,10 +38,6 @@ var (
 	amqpDSNKey    = "engine.kubernetes.amqp_dsn"
 	imagePullKey  = "engine.kubernetes.image_pull_secrets"
 	configPathKey = "engine.kubernetes.kubeconf"
-)
-
-var (
-	PodMissing = errors.New("Pod for job not found, most likely cleaned up")
 )
 
 func newKubeClient(configPath string) (*kubernetes.Clientset, error) {
@@ -128,18 +123,20 @@ func (e *Engine) Terminate(ctx context.Context, run models.Run) error {
 		return err
 	}
 
-	// We "stop" the job by setting the parallelism to zero
-	job := batchv1.Job{
-		Spec: batchv1.JobSpec{
-			Parallelism: utils.Int32P(0),
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      run.RunID,
-			Namespace: opts.GetNamespace(),
-		},
-	}
+	patch := []struct {
+		Op    string `json:"op"`
+		Path  string `json:"path"`
+		Value int32  `json:"value"`
+	}{{
+		Op:    "replace",
+		Path:  "/spec/parallelism",
+		Value: 0,
+	}}
 
-	_, err = e.kClient.BatchV1().Jobs(opts.GetNamespace()).Update(ctx, &job, metav1.UpdateOptions{})
+	patchData, err := json.Marshal(patch)
+
+	_, err = e.kClient.BatchV1().Jobs(opts.GetNamespace()).Patch(
+		ctx, run.RunID, types.JSONPatchType, patchData, v1.PatchOptions{})
 	return err
 }
 
@@ -217,7 +214,7 @@ func (e *Engine) getJobPod(ctx context.Context, namespace string, runID string) 
 	}
 
 	if len(pod.Name) == 0 {
-		return pod, PodMissing
+		return pod, engines.ErrNotFound
 	}
 	return pod, nil
 }

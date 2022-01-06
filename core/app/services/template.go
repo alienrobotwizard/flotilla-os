@@ -51,6 +51,7 @@ func (ts *templateService) CreateTemplate(ctx context.Context, t models.Template
 		exists   bool
 		existing models.Template
 	)
+
 	if tl, err := ts.sm.ListTemplates(ctx, args); err != nil {
 		return existing, false, err
 	} else {
