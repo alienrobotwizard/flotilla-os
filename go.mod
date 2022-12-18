@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go v1.40.18
 	github.com/containerd/containerd v1.5.5 // indirect
 	github.com/docker/docker v20.10.8+incompatible
-	github.com/gin-contrib/cors v1.3.1 // indirect
+	github.com/gin-contrib/cors v1.3.1
 	github.com/gin-gonic/gin v1.7.4
 	github.com/go-kit/kit v0.9.0
 	github.com/go-redis/redis v6.15.6+incompatible
@@ -23,7 +23,7 @@ require (
 	github.com/rs/cors v1.6.1-0.20190613161432-33ffc0734c60
 	github.com/spf13/viper v1.4.1-0.20190614151712-3349bd9cc288
 	github.com/stitchfix/flotilla-os v0.0.0-20210902062707-a36f97aa656f
-	github.com/streadway/amqp v1.0.0 // indirect
+	github.com/streadway/amqp v1.0.0
 	github.com/stretchr/testify v1.7.0
 	github.com/xeipuuv/gojsonschema v0.0.0-20180618132009-1d523034197f
 	go.uber.org/multierr v1.5.0

@@ -48,7 +48,7 @@ worker:
   retry_interval: 1s
   submit_interval: 1s
 
-engine:
-  kubernetes:
-    amqp_queue: cupcake
-    amqp_dsn: amqp://localhost:5672
+#engine:
+  #kubernetes:
+  #  amqp_queue: cupcake
+  #  amqp_dsn: amqp://localhost:5672
