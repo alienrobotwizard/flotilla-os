@@ -34,6 +34,7 @@ type Engine struct {
 }
 
 var (
+	EngineName    = "engine.kubernetes"
 	amqpQueue     = "engine.kubernetes.amqp_queue"
 	amqpDSNKey    = "engine.kubernetes.amqp_dsn"
 	imagePullKey  = "engine.kubernetes.image_pull_secrets"

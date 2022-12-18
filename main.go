@@ -6,6 +6,7 @@ import (
 	"github.com/alienrobotwizard/flotilla-os/clients/metrics"
 	"github.com/alienrobotwizard/flotilla-os/core/app"
 	"github.com/alienrobotwizard/flotilla-os/core/config"
+	"github.com/alienrobotwizard/flotilla-os/core/execution/engines"
 	"github.com/alienrobotwizard/flotilla-os/core/execution/engines/kubernetes"
 	"github.com/pkg/errors"
 	"log"
@@ -41,14 +42,19 @@ func main() {
 	//
 	// Extra engines allows for creating and adding new execution engine types
 	//
-	ctx := context.Background()
-	k8sEngine, err := kubernetes.NewEngine(c)
-	if err != nil {
-		fmt.Printf("%+v\n", errors.Wrap(err, "unable to initialize kubernetes engine"))
-		os.Exit(1)
+	var extraEngines []engines.Engine
+
+	if c.IsSet(kubernetes.EngineName) {
+		k8sEngine, err := kubernetes.NewEngine(c)
+		if err != nil {
+			fmt.Printf("%+v\n", errors.Wrap(err, "unable to initialize kubernetes engine"))
+			os.Exit(1)
+		}
+		extraEngines = append(extraEngines, k8sEngine)
 	}
 
-	server, err := app.NewApp(ctx, c, k8sEngine)
+	ctx := context.Background()
+	server, err := app.NewApp(ctx, c, extraEngines...)
 	if err != nil {
 		fmt.Printf("%+v\n", errors.Wrap(err, "unable to initialize app server"))
 		os.Exit(1)
