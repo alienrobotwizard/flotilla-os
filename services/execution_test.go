@@ -60,6 +60,8 @@ func TestExecutionService_CreateDefinitionRunByDefinitionID(t *testing.T) {
 			Engine:           &engine,
 			EphemeralStorage: nil,
 			NodeLifecycle:    nil,
+			IdempotenceKey:   nil,
+			Arch:             nil,
 		},
 	}
 	run, err := es.CreateDefinitionRunByDefinitionID("B", &req)
@@ -80,10 +82,6 @@ func TestExecutionService_CreateDefinitionRunByDefinitionID(t *testing.T) {
 
 	if len(run.RunID) == 0 {
 		t.Errorf("Expected Create to populated run with non-empty RunID")
-	}
-
-	if run.ClusterName != "clusta" {
-		t.Errorf("Expected cluster name 'clusta' but was '%s'", run.ClusterName)
 	}
 
 	if run.DefinitionID != "B" {
@@ -157,7 +155,7 @@ func TestExecutionService_CreateDefinitionRunByAlias(t *testing.T) {
 	engine := state.DefaultEngine
 	req := state.DefinitionExecutionRequest{
 		ExecutionRequestCommon: &state.ExecutionRequestCommon{
-			ClusterName:      "clusta",
+			ClusterName:      "",
 			Env:              env,
 			OwnerID:          "somebody",
 			Command:          nil,
@@ -166,6 +164,8 @@ func TestExecutionService_CreateDefinitionRunByAlias(t *testing.T) {
 			Engine:           &engine,
 			EphemeralStorage: nil,
 			NodeLifecycle:    nil,
+			IdempotenceKey:   nil,
+			Arch:             nil,
 		},
 	}
 	run, err := es.CreateDefinitionRunByAlias("aliasB", &req)
@@ -186,10 +186,6 @@ func TestExecutionService_CreateDefinitionRunByAlias(t *testing.T) {
 
 	if len(run.RunID) == 0 {
 		t.Errorf("Expected Create to populated run with non-empty RunID")
-	}
-
-	if run.ClusterName != "clusta" {
-		t.Errorf("Expected cluster name 'clusta' but was '%s'", run.ClusterName)
 	}
 
 	if run.DefinitionID != "B" {

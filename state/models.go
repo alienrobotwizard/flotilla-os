@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/Masterminds/sprig"
+	"github.com/aws/aws-sdk-go/aws"
 	uuid "github.com/nu7hatch/gouuid"
 	"github.com/pkg/errors"
 	"github.com/stitchfix/flotilla-os/utils"
@@ -27,11 +28,11 @@ var DefaultTaskType = "task"
 
 var MinCPU = int64(256)
 
-var MaxCPU = int64(32000)
+var MaxCPU = int64(128000)
 
 var MinMem = int64(512)
 
-var MaxMem = int64(250000)
+var MaxMem = int64(500000)
 
 var TTLSecondsAfterFinished = int32(3600)
 
@@ -68,6 +69,8 @@ var MaxLogLines = int64(256)
 
 var EKSBackoffLimit = int32(0)
 
+var GPUNodeTypes = []string{"p3.2xlarge", "p3.8xlarge", "p3.16xlarge", "g5.xlarge", "g5.2xlarge", "g5.4xlarge", "g5.8xlarge", "g5.12xlarge", "g5.16xlarge", "g5.24xlarge", "g5.48xlarge"}
+
 var WorkerTypes = map[string]bool{
 	"retry":  true,
 	"submit": true,
@@ -78,10 +81,8 @@ func IsValidWorkerType(workerType string) bool {
 	return WorkerTypes[workerType]
 }
 
-//
 // IsValidStatus checks that the given status
 // string is one of the valid statuses
-//
 func IsValidStatus(status string) bool {
 	return status == StatusRunning ||
 		status == StatusQueued ||
@@ -113,24 +114,18 @@ func newUUIDv4() (string, error) {
 	return u.String(), nil
 }
 
-//
 // EnvList wraps a list of EnvVar
-// - abstraction to make it easier to read
-//   and write to db
-//
+//   - abstraction to make it easier to read
+//     and write to db
 type EnvList []EnvVar
 
-//
 // PortsList wraps a list of int
-// - abstraction to make it easier to read
-//   and write to db
-//
+//   - abstraction to make it easier to read
+//     and write to db
 type PortsList []int
 
-//
 // EnvVar represents a single environment variable
 // for either a definition or a run
-//
 type EnvVar struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
@@ -138,11 +133,9 @@ type EnvVar struct {
 
 type NodeList []string
 
-//
 // Tags wraps a list of strings
-// - abstraction to make it easier to read
-//   and write to db
-//
+//   - abstraction to make it easier to read
+//     and write to db
 type Tags []string
 
 // ExecutableResources define the resources and flags required to run an
@@ -186,6 +179,7 @@ func (r *SparkExtension) Marshal() ([]byte, error) {
 type SparkExtension struct {
 	SparkSubmitJobDriver *SparkSubmitJobDriver `json:"spark_submit_job_driver,omitempty"`
 	ApplicationConf      []Conf                `json:"application_conf,omitempty"`
+	HiveConf             []Conf                `json:"hive_conf,omitempty"`
 	EMRJobId             *string               `json:"emr_job_id,omitempty"`
 	SparkAppId           *string               `json:"spark_app_id,omitempty"`
 	EMRJobManifest       *string               `json:"emr_job_manifest,omitempty"`
@@ -195,7 +189,10 @@ type SparkExtension struct {
 	EMRReleaseLabel      *string               `json:"emr_release_label,omitempty"`
 	ExecutorInitCommand  *string               `json:"executor_init_command,omitempty"`
 	DriverInitCommand    *string               `json:"driver_init_command,omitempty"`
+	AppUri               *string               `json:"app_uri,omitempty"`
 	Executors            []string              `json:"executors,omitempty"`
+	ExecutorOOM          *bool                 `json:"executor_oom,omitempty"`
+	DriverOOM            *bool                 `json:"driver_oom,omitempty"`
 }
 
 type Conf struct {
@@ -210,7 +207,13 @@ type SparkSubmitJobDriver struct {
 	Files               []string  `json:"files,omitempty"`
 	PyFiles             []string  `json:"py_files,omitempty"`
 	Jars                []string  `json:"jars,omitempty"`
+	Class               *string   `json:"class,omitempty"`
+	WorkingDir          *string   `json:"working_dir,omitempty"`
+	NumExecutors        *int64    `json:"num_executors,omitempty"`
+	ExecutorMemory      *int64    `json:"executor_memory,omitempty"`
 }
+
+type Labels map[string]string
 
 // Common fields required to execute any Executable.
 type ExecutionRequestCommon struct {
@@ -226,6 +229,11 @@ type ExecutionRequestCommon struct {
 	NodeLifecycle         *string         `json:"node_lifecycle"`
 	ActiveDeadlineSeconds *int64          `json:"active_deadline_seconds,omitempty"`
 	SparkExtension        *SparkExtension `json:"spark_extension,omitempty"`
+	Description           *string         `json:"description,omitempty"`
+	CommandHash           *string         `json:"command_hash,omitempty"`
+	IdempotenceKey        *string         `json:"idempotence_key,omitempty"`
+	Arch                  *string         `json:"arch,omitempty"`
+	Labels                *Labels         `json:"labels,omitempty"`
 }
 
 type ExecutionRequestCustom map[string]interface{}
@@ -293,10 +301,8 @@ set -x
 `
 var CommandTemplate, _ = template.New("command").Parse(commandWrapper)
 
-//
 // WrappedCommand returns the wrapped command for the definition
 // * wrapping ensures lines are logged and exit code is set
-//
 func (d *Definition) WrappedCommand() (string, error) {
 	var result bytes.Buffer
 	if err := CommandTemplate.Execute(&result, d); err != nil {
@@ -310,10 +316,8 @@ type validationCondition struct {
 	reason    string
 }
 
-//
 // IsValid returns true only if this is a valid definition with all
 // required information
-//
 func (d *Definition) IsValid() (bool, []string) {
 	conditions := []validationCondition{
 		{len(d.Image) == 0, "string [image] must be specified"},
@@ -331,9 +335,7 @@ func (d *Definition) IsValid() (bool, []string) {
 	return valid, reasons
 }
 
-//
 // UpdateWith updates this definition with information from another
-//
 func (d *Definition) UpdateWith(other Definition) {
 	if len(other.DefinitionID) > 0 {
 		d.DefinitionID = other.DefinitionID
@@ -393,9 +395,7 @@ func (d Definition) MarshalJSON() ([]byte, error) {
 	})
 }
 
-//
 // DefinitionList wraps a list of Definitions
-//
 type DefinitionList struct {
 	Total       int          `json:"total"`
 	Definitions []Definition `json:"definitions"`
@@ -416,17 +416,16 @@ func (dl *DefinitionList) MarshalJSON() ([]byte, error) {
 	})
 }
 
-//
 // Run represents a single run of a Definition
 //
 // TODO:
-//   Runs need to -copy- the run relevant information
-//   from their associated definition when they are
-//   created so they always have correct info. Currently
-//   the definition can change during or after the run
-//   is created and launched meaning the run is acting
-//   on information that is no longer accessible.
 //
+//	Runs need to -copy- the run relevant information
+//	from their associated definition when they are
+//	created so they always have correct info. Currently
+//	the definition can change during or after the run
+//	is created and launched meaning the run is acting
+//	on information that is no longer accessible.
 type Run struct {
 	RunID                   string                   `json:"run_id"`
 	DefinitionID            string                   `json:"definition_id"`
@@ -470,11 +469,13 @@ type Run struct {
 	ActiveDeadlineSeconds   *int64                   `json:"active_deadline_seconds,omitempty"`
 	SparkExtension          *SparkExtension          `json:"spark_extension,omitempty"`
 	MetricsUri              *string                  `json:"metrics_uri,omitempty"`
+	Description             *string                  `json:"description,omitempty"`
+	IdempotenceKey          *string                  `json:"idempotence_key,omitempty"`
+	Arch                    *string                  `json:"arch,omitempty"`
+	Labels                  Labels                   `json:"labels,omitempty"`
 }
 
-//
 // UpdateWith updates this run with information from another
-//
 func (d *Run) UpdateWith(other Run) {
 	if len(other.RunID) > 0 {
 		d.RunID = other.RunID
@@ -614,12 +615,28 @@ func (d *Run) UpdateWith(other Run) {
 		d.MetricsUri = other.MetricsUri
 	}
 
+	if other.Description != nil {
+		d.Description = other.Description
+	}
+
+	if other.IdempotenceKey != nil {
+		d.IdempotenceKey = other.IdempotenceKey
+	}
+
+	if other.Arch != nil {
+		d.Arch = other.Arch
+	}
+
 	if other.MemoryLimit != nil {
 		d.MemoryLimit = other.MemoryLimit
 	}
 
 	if other.AttemptCount != nil {
 		d.AttemptCount = other.AttemptCount
+	}
+
+	if other.Labels != nil {
+		d.Labels = other.Labels
 	}
 	//
 	// Runs have a deterministic lifecycle
@@ -720,9 +737,25 @@ func (r Run) MarshalJSON() ([]byte, error) {
 		executionRequestCustom = &ExecutionRequestCustom{}
 	}
 
+	if r.Description == nil {
+		r.Description = aws.String(r.Alias)
+	}
+
 	sparkExtension := r.SparkExtension
+
 	if sparkExtension == nil {
 		sparkExtension = &SparkExtension{}
+	} else {
+		if sparkExtension.HiveConf != nil {
+			for _, conf := range sparkExtension.HiveConf {
+				if conf.Name != nil && strings.Contains(*conf.Name, "ConnectionPassword") {
+					conf.Value = aws.String("****")
+				}
+			}
+		}
+		if r.Status != StatusStopped && r.SparkExtension.AppUri != nil {
+			r.SparkExtension.HistoryUri = r.SparkExtension.AppUri
+		}
 	}
 
 	return json.Marshal(&struct {
@@ -740,9 +773,7 @@ func (r Run) MarshalJSON() ([]byte, error) {
 	})
 }
 
-//
 // RunList wraps a list of Runs
-//
 type RunList struct {
 	Total int   `json:"total"`
 	Runs  []Run `json:"history"`
@@ -780,43 +811,33 @@ type PodEvent struct {
 	Message      string     `json:"message"`
 }
 
-//
 // GroupsList wraps a list of group names
-//
 type GroupsList struct {
 	Groups []string
 	Total  int
 }
 
-//
 // TagsList wraps a list of tag names
-//
 type TagsList struct {
 	Tags  []string
 	Total int
 }
 
-//
 // Worker represents a Flotilla Worker
-//
 type Worker struct {
 	WorkerType       string `json:"worker_type"`
 	CountPerInstance int    `json:"count_per_instance"`
 	Engine           string `json:"engine"`
 }
 
-//
 // UpdateWith updates this definition with information from another
-//
 func (w *Worker) UpdateWith(other Worker) {
 	if other.CountPerInstance >= 0 {
 		w.CountPerInstance = other.CountPerInstance
 	}
 }
 
-//
 // WorkersList wraps a list of Workers
-//
 type WorkersList struct {
 	Total   int      `json:"total"`
 	Workers []Worker `json:"workers"`
@@ -1042,9 +1063,7 @@ func (t *Template) IsValid() (bool, []string) {
 	return valid, reasons
 }
 
-//
 // TemplateList wraps a list of Templates
-//
 type TemplateList struct {
 	Total     int        `json:"total"`
 	Templates []Template `json:"templates"`
@@ -1087,17 +1106,17 @@ type KubernetesEvent struct {
 }
 
 type InvolvedObject struct {
-	Kind            string `json:"kind,omitempty"`
-	Namespace       string `json:"namespace,omitempty"`
-	Name            string `json:"name,omitempty"`
-	Uid             string `json:"uid,omitempty"`
-	APIVersion      string `json:"apiVersion,omitempty"`
-	ResourceVersion string `json:"resourceVersion,omitempty"`
-	FieldPath       string `json:"fieldPath,omitempty"`
-	Labels          Labels `json:"labels,omitempty"`
+	Kind            string      `json:"kind,omitempty"`
+	Namespace       string      `json:"namespace,omitempty"`
+	Name            string      `json:"name,omitempty"`
+	Uid             string      `json:"uid,omitempty"`
+	APIVersion      string      `json:"apiVersion,omitempty"`
+	ResourceVersion string      `json:"resourceVersion,omitempty"`
+	FieldPath       string      `json:"fieldPath,omitempty"`
+	Labels          EventLabels `json:"labels,omitempty"`
 }
 
-type Labels struct {
+type EventLabels struct {
 	ControllerUid string `json:"controller-uid,omitempty"`
 	JobName       string `json:"job-name,omitempty"`
 }

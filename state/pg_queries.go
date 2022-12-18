@@ -1,8 +1,6 @@
 package state
 
-//
 // DefinitionSelect postgres specific query for definitions
-//
 const DefinitionSelect = `
 select td.definition_id                    as definitionid,
        td.adaptive_resource_allocation     as adaptiveresourceallocation,
@@ -20,37 +18,93 @@ select td.definition_id                    as definitionid,
 from (select * from task_def) td
 `
 
-//
 // ListDefinitionsSQL postgres specific query for listing definitions
-//
 const ListDefinitionsSQL = DefinitionSelect + "\n%s %s limit $1 offset $2"
 
-//
 // GetDefinitionSQL postgres specific query for getting a single definition
-//
 const GetDefinitionSQL = DefinitionSelect + "\nwhere definition_id = $1"
 
-//
 // GetDefinitionByAliasSQL get definition by alias
-//
 const GetDefinitionByAliasSQL = DefinitionSelect + "\nwhere alias = $1"
 
 const TaskResourcesSelectCommandSQL = `
 SELECT cast((percentile_disc(0.99) within GROUP (ORDER BY A.max_memory_used)) * 1.75 as int) as memory,
        cast((percentile_disc(0.99) within GROUP (ORDER BY A.max_cpu_used)) * 1.25  as int)  as cpu
-FROM (SELECT CASE WHEN exit_code = 137 THEN memory * 2 ELSE max_memory_used END as max_memory_used, max_cpu_used
+FROM (SELECT memory as max_memory_used, cpu as max_cpu_used
       FROM TASK
       WHERE
-           queued_at >= CURRENT_TIMESTAMP - INTERVAL '7 days'
-           AND (exit_code = 0 or exit_code = 137)
-           AND max_memory_used is not null
-           AND max_cpu_used is not null
+           queued_at >= CURRENT_TIMESTAMP - INTERVAL '3 days'
+           AND (exit_code = 137 or exit_reason = 'OOMKilled')
            AND engine = 'eks'
            AND definition_id = $1
            AND command_hash = (SELECT command_hash FROM task WHERE run_id = $2)
       LIMIT 30) A
-
 `
+
+const TaskResourcesExecutorCountSQL = `
+SELECT least(coalesce(cast((percentile_disc(0.99) within GROUP (ORDER BY A.executor_count)) as int), 25), 100) as executor_count
+FROM (SELECT CASE
+                 WHEN (exit_reason like '%Exception%')
+                     THEN (spark_extension -> 'spark_submit_job_driver' -> 'num_executors')::int * 1.75
+                 ELSE (spark_extension -> 'spark_submit_job_driver' -> 'num_executors')::int * 1
+                 END as executor_count
+      FROM TASK
+      WHERE
+           queued_at >= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+           AND engine = 'eks-spark'
+           AND definition_id = $1
+           AND command_hash = $2
+      LIMIT 30) A
+`
+const TaskResourcesDriverOOMSQL = `
+SELECT (spark_extension -> 'driver_oom')::boolean AS driver_oom
+FROM TASK
+WHERE queued_at >= CURRENT_TIMESTAMP - INTERVAL '7 days'
+  AND engine = 'eks-spark'
+  AND definition_id = $1
+  AND command_hash = $2
+  AND exit_code = 137
+  AND spark_extension ? 'driver_oom'
+GROUP BY 1
+`
+
+const TaskIdempotenceKeyCheckSQL = `
+WITH runs as (
+    SELECT run_id
+    FROM task
+    WHERE idempotence_key = $1
+      and (exit_code = 0 or exit_code is null)
+      and queued_at >= CURRENT_TIMESTAMP - INTERVAL '7 days')
+SELECT run_id
+FROM runs
+LIMIT 1;
+`
+
+const TaskResourcesExecutorOOMSQL = `
+SELECT CASE WHEN A.c >= 1 THEN true::boolean ELSE false::boolean END
+FROM (SELECT count(*) as c
+      FROM TASK
+      WHERE
+           queued_at >= CURRENT_TIMESTAMP - INTERVAL '7 days'
+           AND definition_id = $1
+           AND command_hash = $2
+		   AND engine = 'eks-spark'
+           AND exit_code !=0
+      LIMIT 30) A
+`
+
+const TaskResourcesExecutorNodeLifecycleSQL = `
+SELECT CASE WHEN A.c >= 1 THEN 'ondemand' ELSE 'spot' END
+FROM (SELECT count(*) as c
+      FROM TASK
+      WHERE
+           queued_at >= CURRENT_TIMESTAMP - INTERVAL '12 hour'
+           AND definition_id = $1
+           AND command_hash = $2
+           AND exit_code !=0
+      LIMIT 30) A
+`
+
 const TaskExecutionRuntimeCommandSQL = `
 SELECT percentile_disc(0.95) within GROUP (ORDER BY A.minutes) as minutes
 FROM (SELECT EXTRACT(epoch from finished_at - started_at) / 60 as minutes
@@ -64,56 +118,35 @@ FROM (SELECT EXTRACT(epoch from finished_at - started_at) / 60 as minutes
 `
 
 const ListFailingNodesSQL = `
-WITH control_plane_errors AS
-         (
-             SELECT instance_dns_name
-             FROM TASK
-             WHERE (exit_code = 128 OR
-                    pod_events @> '[{"reason": "Failed"}]' OR
-                    pod_events @> '[{"reason": "FailedSync"}]' OR
-                    pod_events @> '[{"reason": "OutOfmemory"}]' OR
-                    pod_events @> '[{"reason": "FailedCreatePodSandBox"}]' OR
-                    (exit_code = 1 AND exit_reason is null))
-               AND engine = 'eks'
-               AND queued_at >= NOW() - INTERVAL '12 HOURS'
-             GROUP BY 1
-         ),
-     timeouts AS
-         (
-             SELECT instance_dns_name, count(*) as c
-             FROM TASK
-             WHERE exit_reason like 'Task terminated by - %'
-               AND engine = 'eks'
-               AND queued_at >= NOW() - INTERVAL '12 HOURS'
-             GROUP BY 1
-         )
-SELECT
-   instance_dns_name
-FROM
-   control_plane_errors
-UNION ALL
-SELECT
-   instance_dns_name
-FROM
-   timeouts
-WHERE
-   c > 5
+SELECT instance_dns_name
+FROM (
+         SELECT instance_dns_name, count(*) as c
+         FROM TASK
+         WHERE (exit_code = 128 OR
+                pod_events @> '[{"reason": "Failed"}]' OR
+                pod_events @> '[{"reason": "FailedSync"}]' OR
+                pod_events @> '[{"reason": "FailedCreatePodSandBox"}]' OR
+                pod_events @> '[{"reason": "OutOfmemory"}]')
+           AND engine = 'eks'
+           AND queued_at >= NOW() - INTERVAL '1 HOURS'
+           AND instance_dns_name like 'ip-%'
+         GROUP BY 1
+         order by 2 desc) AS all_nodes
+WHERE c >= 5
 `
 
 const PodReAttemptRate = `
 SELECT (multiple_attempts / (CASE WHEN single_attempts = 0 THEN 1 ELSE single_attempts END)) AS attempts
 FROM (
-      SELECT COUNT(CASE WHEN attempt_count = 1 THEN 1 END) * 1.0 AS single_attempts,
-             COUNT(CASE WHEN attempt_count != 1 THEN 1 END) * 1.0 AS multiple_attempts
+      SELECT COUNT(CASE WHEN attempt_count <= 1 THEN 1 END) * 1.0 AS single_attempts,
+             COUNT(CASE WHEN attempt_count > 1 THEN 1 END) * 1.0 AS multiple_attempts
       FROM task
       WHERE engine = 'eks' AND
-            queued_at >= NOW() - INTERVAL '30 MINUTES' AND
+            queued_at >= NOW() - INTERVAL '18 MINUTES' AND
             node_lifecycle = 'spot') A
 `
 
-//
 // RunSelect postgres specific query for runs
-//
 const RunSelect = `
 select t.run_id                          as runid,
        coalesce(t.definition_id, '')     as definitionid,
@@ -155,56 +188,45 @@ select t.run_id                          as runid,
        run_exceptions::TEXT              as runexceptions,
        active_deadline_seconds           as activedeadlineseconds,
        spark_extension::TEXT             as sparkextension,
-       metrics_uri                       as metricsuri
+       metrics_uri                       as metricsuri,
+       description                       as description,
+	   idempotence_key                   as idempotencekey,
+       coalesce("user", '')              as user,
+	   coalesce(arch, '')                as arch,
+	   labels::TEXT                      as labels
 from task t
 `
 
-//
 // ListRunsSQL postgres specific query for listing runs
-//
 const ListRunsSQL = RunSelect + "\n%s %s limit $1 offset $2"
 
-//
 // GetRunSQL postgres specific query for getting a single run
-//
 const GetRunSQL = RunSelect + "\nwhere run_id = $1"
 
 const GetRunSQLByEMRJobId = RunSelect + "\nwhere spark_extension->>'emr_job_id' = $1"
 
-//
 // GetRunSQLForUpdate postgres specific query for getting a single run
 // for update
-//
 const GetRunSQLForUpdate = GetRunSQL + " for update"
 
-//
 // GroupsSelect postgres specific query for getting existing definition
 // group_names
-//
 const GroupsSelect = `
 select distinct group_name from task_def
 `
 
-//
 // TagsSelect postgres specific query for getting existing definition tags
-//
 const TagsSelect = `
 select distinct text from tags
 `
 
-//
 // ListGroupsSQL postgres specific query for listing definition group_names
-//
 const ListGroupsSQL = GroupsSelect + "\n%s order by group_name asc limit $1 offset $2"
 
-//
 // ListTagsSQL postgres specific query for listing definition tags
-//
 const ListTagsSQL = TagsSelect + "\n%s order by text asc limit $1 offset $2"
 
-//
 // WorkerSelect postgres specific query for workers
-//
 const WorkerSelect = `
   select
     worker_type        as workertype,
@@ -213,23 +235,17 @@ const WorkerSelect = `
   from worker
 `
 
-//
 // ListWorkersSQL postgres specific query for listing workers
-//
 const ListWorkersSQL = WorkerSelect
 
 const GetWorkerEngine = WorkerSelect + "\nwhere engine = $1"
 
-//
 // GetWorkerSQL postgres specific query for retrieving data for a specific
 // worker type.
-//
 const GetWorkerSQL = WorkerSelect + "\nwhere worker_type = $1 and engine = $2"
 
-//
 // GetWorkerSQLForUpdate postgres specific query for retrieving data for a specific
 // worker type; locks the row.
-//
 const GetWorkerSQLForUpdate = GetWorkerSQL + " for update"
 
 // TemplateSelect selects a template

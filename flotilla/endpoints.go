@@ -1,8 +1,10 @@
 package flotilla
 
 import (
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/gorilla/mux"
 	"github.com/stitchfix/flotilla-os/exceptions"
 	flotillaLog "github.com/stitchfix/flotilla-os/log"
@@ -50,11 +52,14 @@ type LaunchRequestV2 struct {
 	SparkExtension        *state.SparkExtension `json:"spark_extension,omitempty"`
 	ClusterName           *string               `json:"cluster,omitempty"`
 	Env                   *state.EnvList        `json:"env,omitempty"`
+	Description           *string               `json:"description,omitempty"`
+	CommandHash           *string               `json:"command_hash,omitempty"`
+	IdempotenceKey        *string               `json:"idempotence_key,omitempty"`
+	Arch                  *string               `json:"arch,omitempty"`
+	Labels                *state.Labels         `json:"labels,omitempty"`
 }
 
-//
 // RunTags represents which user is responsible for a task run
-//
 type RunTags struct {
 	OwnerEmail string `json:"owner_email"`
 	TeamName   string `json:"team_name"`
@@ -424,6 +429,7 @@ func (ep *endpoints) CreateRun(w http.ResponseWriter, r *http.Request) {
 			Engine:           &state.DefaultEngine,
 			EphemeralStorage: nil,
 			NodeLifecycle:    nil,
+			CommandHash:      nil,
 		},
 	}
 	run, err := ep.executionService.CreateDefinitionRunByDefinitionID(vars["definition_id"], &req)
@@ -447,6 +453,8 @@ func (ep *endpoints) CreateRunV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// check if OnwerEmail is present in lr.EventLabels
+
 	if len(lr.RunTags.OwnerEmail) == 0 || len(lr.RunTags.TeamName) == 0 {
 		ep.encodeError(w, exceptions.MalformedInput{
 			ErrorString: fmt.Sprintf("run_tags must exist in body and contain [owner_email] and [team_name]")})
@@ -462,6 +470,10 @@ func (ep *endpoints) CreateRunV2(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if lr.CommandHash == nil && lr.Description != nil {
+		lr.CommandHash = aws.String(fmt.Sprintf("%x", md5.Sum([]byte(*lr.Description))))
+	}
+
 	req := state.DefinitionExecutionRequest{
 		ExecutionRequestCommon: &state.ExecutionRequestCommon{
 			Env:              lr.Env,
@@ -474,6 +486,11 @@ func (ep *endpoints) CreateRunV2(w http.ResponseWriter, r *http.Request) {
 			EphemeralStorage: nil,
 			NodeLifecycle:    nil,
 			SparkExtension:   lr.SparkExtension,
+			Description:      lr.Description,
+			CommandHash:      lr.CommandHash,
+			IdempotenceKey:   lr.IdempotenceKey,
+			Arch:             lr.Arch,
+			Labels:           lr.Labels,
 		},
 	}
 	run, err := ep.executionService.CreateDefinitionRunByDefinitionID(vars["definition_id"], &req)
@@ -511,6 +528,10 @@ func (ep *endpoints) CreateRunV4(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if lr.CommandHash == nil && lr.Description != nil {
+		lr.CommandHash = aws.String(fmt.Sprintf("%x", md5.Sum([]byte(*lr.Description))))
+	}
+
 	if lr.NodeLifecycle != nil {
 		if !utils.StringSliceContains(state.NodeLifeCycles, *lr.NodeLifecycle) {
 			ep.encodeError(w, exceptions.MalformedInput{
@@ -534,10 +555,16 @@ func (ep *endpoints) CreateRunV4(w http.ResponseWriter, r *http.Request) {
 			NodeLifecycle:         lr.NodeLifecycle,
 			ActiveDeadlineSeconds: lr.ActiveDeadlineSeconds,
 			SparkExtension:        lr.SparkExtension,
+			Description:           lr.Description,
+			CommandHash:           lr.CommandHash,
+			IdempotenceKey:        lr.IdempotenceKey,
+			Arch:                  lr.Arch,
+			Labels:                lr.Labels,
 		},
 	}
 
 	run, err := ep.executionService.CreateDefinitionRunByDefinitionID(vars["definition_id"], &req)
+
 	if err != nil {
 		ep.logger.Log(
 			"message", "problem creating V4 run",
@@ -572,6 +599,10 @@ func (ep *endpoints) CreateRunByAlias(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if lr.CommandHash == nil && lr.Description != nil {
+		lr.CommandHash = aws.String(fmt.Sprintf("%x", md5.Sum([]byte(*lr.Description))))
+	}
+
 	if lr.NodeLifecycle != nil {
 		if !utils.StringSliceContains(state.NodeLifeCycles, *lr.NodeLifecycle) {
 			ep.encodeError(w, exceptions.MalformedInput{
@@ -595,6 +626,11 @@ func (ep *endpoints) CreateRunByAlias(w http.ResponseWriter, r *http.Request) {
 			NodeLifecycle:         lr.NodeLifecycle,
 			ActiveDeadlineSeconds: lr.ActiveDeadlineSeconds,
 			SparkExtension:        lr.SparkExtension,
+			Description:           lr.Description,
+			CommandHash:           lr.CommandHash,
+			IdempotenceKey:        lr.IdempotenceKey,
+			Arch:                  lr.Arch,
+			Labels:                lr.Labels,
 		},
 	}
 	run, err := ep.executionService.CreateDefinitionRunByAlias(vars["alias"], &req)
@@ -790,7 +826,7 @@ func (ep *endpoints) ListWorkers(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-//Get information about an active worker.
+// Get information about an active worker.
 func (ep *endpoints) GetWorker(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	worker, err := ep.workerService.Get(vars["worker_type"], state.DefaultEngine)

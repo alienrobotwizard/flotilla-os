@@ -2,14 +2,17 @@ package adapter
 
 import (
 	"fmt"
+	utils "github.com/stitchfix/flotilla-os/execution"
+	"regexp"
+	"strings"
+	"time"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/stitchfix/flotilla-os/state"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"strings"
-	"time"
 )
 
 type EKSAdapter interface {
@@ -18,19 +21,15 @@ type EKSAdapter interface {
 }
 type eksAdapter struct{}
 
-//
 // NewEKSAdapter configures and returns an eks adapter for translating
 // from EKS api specific objects to our representation
-//
 func NewEKSAdapter() (EKSAdapter, error) {
 	adapter := eksAdapter{}
 	return &adapter, nil
 }
 
-//
 // Adapting Kubernetes batch/v1 job to a Flotilla run object.
 // This method maps the exit code & timestamps from Kubernetes to Flotilla's Run object.
-//
 func (a *eksAdapter) AdaptJobToFlotillaRun(job *batchv1.Job, run state.Run, pod *corev1.Pod) (state.Run, error) {
 	updated := run
 	if job.Status.Active == 1 && job.Status.CompletionTime == nil {
@@ -88,7 +87,6 @@ func (a *eksAdapter) AdaptJobToFlotillaRun(job *batchv1.Job, run state.Run, pod 
 	return updated, nil
 }
 
-//
 // Adapting Flotilla run object to Kubernetes batch/v1 job.
 // 1. Construction of the cmd that will be run.
 // 2. Resources associated to a pod (includes Adaptive Resource Allocation)
@@ -96,7 +94,6 @@ func (a *eksAdapter) AdaptJobToFlotillaRun(job *batchv1.Job, run state.Run, pod 
 // 4. Port mappings.
 // 5. Node lifecycle.
 // 6. Node affinity and anti-affinity
-//
 func (a *eksAdapter) AdaptFlotillaDefinitionAndRunToJob(executable state.Executable, run state.Run, sa string, schedulerName string, manager state.Manager, araEnabled bool) (batchv1.Job, error) {
 	cmd := ""
 
@@ -109,6 +106,8 @@ func (a *eksAdapter) AdaptFlotillaDefinitionAndRunToJob(executable state.Executa
 	run.Command = &cmd
 	resourceRequirements, run := a.constructResourceRequirements(executable, run, manager, araEnabled)
 
+	volumeMounts, volumes := a.constructVolumeMounts(executable, run, manager, araEnabled)
+
 	container := corev1.Container{
 		Name:      run.RunID,
 		Image:     run.Image,
@@ -118,8 +117,23 @@ func (a *eksAdapter) AdaptFlotillaDefinitionAndRunToJob(executable state.Executa
 		Ports:     a.constructContainerPorts(executable),
 	}
 
+	if volumeMounts != nil {
+		container.VolumeMounts = volumeMounts
+	}
 	affinity := a.constructAffinity(executable, run, manager)
-	annotations := map[string]string{"cluster-autoscaler.kubernetes.io/safe-to-evict": "false"}
+
+	annotations := map[string]string{}
+	annotations["cluster-autoscaler.kubernetes.io/safe-to-evict"] = a.constructEviction(run, manager)
+
+	labels := utils.GetLabels(run)
+
+	//if run.Description != nil {
+	//	info := strings.Split(*run.Description, "/")
+	//
+	//	for i, s := range info {
+	//		labels[fmt.Sprintf("info%v", i)] = a.sanitizeLabel(s)
+	//	}
+	//}
 
 	jobSpec := batchv1.JobSpec{
 		TTLSecondsAfterFinished: &state.TTLSecondsAfterFinished,
@@ -129,6 +143,7 @@ func (a *eksAdapter) AdaptFlotillaDefinitionAndRunToJob(executable state.Executa
 		Template: corev1.PodTemplateSpec{
 			ObjectMeta: v1.ObjectMeta{
 				Annotations: annotations,
+				Labels:      labels,
 			},
 			Spec: corev1.PodSpec{
 				SchedulerName:      schedulerName,
@@ -140,6 +155,10 @@ func (a *eksAdapter) AdaptFlotillaDefinitionAndRunToJob(executable state.Executa
 		},
 	}
 
+	if volumes != nil {
+		jobSpec.Template.Spec.Volumes = volumes
+	}
+
 	eksJob := batchv1.Job{
 		Spec: jobSpec,
 		ObjectMeta: v1.ObjectMeta{
@@ -148,6 +167,22 @@ func (a *eksAdapter) AdaptFlotillaDefinitionAndRunToJob(executable state.Executa
 	}
 
 	return eksJob, nil
+}
+func (a *eksAdapter) constructEviction(run state.Run, manager state.Manager) string {
+	if run.Gpu != nil && *run.Gpu > 0 {
+		return "false"
+	}
+
+	if run.NodeLifecycle != nil && *run.NodeLifecycle == state.OndemandLifecycle {
+		return "false"
+	}
+	if run.CommandHash != nil {
+		nodeType, err := manager.GetNodeLifecycle(run.DefinitionID, *run.CommandHash)
+		if err == nil && nodeType == state.OndemandLifecycle {
+			return "false"
+		}
+	}
+	return "true"
 }
 
 func (a *eksAdapter) constructContainerPorts(executable state.Executable) []corev1.ContainerPort {
@@ -167,14 +202,18 @@ func (a *eksAdapter) constructAffinity(executable state.Executable, run state.Ru
 	affinity := &corev1.Affinity{}
 	executableResources := executable.GetExecutableResources()
 	var requiredMatch []corev1.NodeSelectorRequirement
-
-	gpuNodeTypes := []string{"p3.2xlarge", "p3.8xlarge", "p3.16xlarge"}
+	gpuNodeTypes := state.GPUNodeTypes
 
 	var nodeLifecycle []string
 	if run.NodeLifecycle != nil && *run.NodeLifecycle == state.OndemandLifecycle {
-		nodeLifecycle = append(nodeLifecycle, "normal")
+		nodeLifecycle = append(nodeLifecycle, "on-demand", "normal")
 	} else {
-		nodeLifecycle = append(nodeLifecycle, "spot")
+		nodeLifecycle = append(nodeLifecycle, "spot", "on-demand", "normal")
+	}
+
+	arch := []string{"amd64"}
+	if run.Arch != nil && *run.Arch == "arm64" {
+		arch = []string{"arm64"}
 	}
 
 	if (executableResources.Gpu == nil || *executableResources.Gpu <= 0) && (run.Gpu == nil || *run.Gpu <= 0) {
@@ -183,22 +222,18 @@ func (a *eksAdapter) constructAffinity(executable state.Executable, run state.Ru
 			Operator: corev1.NodeSelectorOpNotIn,
 			Values:   gpuNodeTypes,
 		})
-
-		nodeList, err := manager.ListFailingNodes()
-
-		if err == nil && len(nodeList) > 0 {
-			requiredMatch = append(requiredMatch, corev1.NodeSelectorRequirement{
-				Key:      "kubernetes.io/hostname",
-				Operator: corev1.NodeSelectorOpNotIn,
-				Values:   nodeList,
-			})
-		}
 	}
 
 	requiredMatch = append(requiredMatch, corev1.NodeSelectorRequirement{
 		Key:      "node.kubernetes.io/lifecycle",
 		Operator: corev1.NodeSelectorOpIn,
 		Values:   nodeLifecycle,
+	})
+
+	requiredMatch = append(requiredMatch, corev1.NodeSelectorRequirement{
+		Key:      "kubernetes.io/arch",
+		Operator: corev1.NodeSelectorOpIn,
+		Values:   arch,
 	})
 
 	affinity = &corev1.Affinity{
@@ -256,17 +291,30 @@ func (a *eksAdapter) constructResourceRequirements(executable state.Executable, 
 	return resourceRequirements, run
 }
 
+func (a *eksAdapter) constructVolumeMounts(executable state.Executable, run state.Run, manager state.Manager, araEnabled bool) ([]corev1.VolumeMount, []corev1.Volume) {
+	var mounts []corev1.VolumeMount = nil
+	var volumes []corev1.Volume = nil
+	if run.Gpu != nil && *run.Gpu > 0 {
+		mounts = make([]corev1.VolumeMount, 1)
+		mounts[0] = corev1.VolumeMount{Name: "shared-memory", MountPath: "/dev/shm"}
+		volumes = make([]corev1.Volume, 1)
+		sharedLimit := resource.MustParse(fmt.Sprintf("%dGi", *run.Gpu*int64(2)))
+		emptyDir := corev1.EmptyDirVolumeSource{Medium: "Memory", SizeLimit: &sharedLimit}
+		volumes[0] = corev1.Volume{Name: "shared-memory", VolumeSource: corev1.VolumeSource{EmptyDir: &emptyDir}}
+	}
+	return mounts, volumes
+}
+
 func (a *eksAdapter) adaptiveResources(executable state.Executable, run state.Run, manager state.Manager, araEnabled bool) (int64, int64, int64, int64) {
 	cpuLimit, memLimit := a.getResourceDefaults(run, executable)
 	cpuRequest, memRequest := a.getResourceDefaults(run, executable)
-	executableResources := executable.GetExecutableResources()
-	if araEnabled && executableResources.AdaptiveResourceAllocation != nil && *executableResources.AdaptiveResourceAllocation == true {
-		estimatedResources, err := manager.EstimateRunResources(*executable.GetExecutableID(), run.RunID)
-		if err == nil {
-			cpuRequest = estimatedResources.Cpu
-			memRequest = estimatedResources.Memory
-		}
+
+	estimatedResources, err := manager.EstimateRunResources(*executable.GetExecutableID(), run.RunID)
+	if err == nil {
+		cpuRequest = estimatedResources.Cpu
+		memRequest = estimatedResources.Memory
 	}
+
 	if cpuRequest > cpuLimit {
 		cpuLimit = cpuRequest
 	}
@@ -278,13 +326,6 @@ func (a *eksAdapter) adaptiveResources(executable state.Executable, run state.Ru
 	cpuRequest, memRequest = a.checkResourceBounds(cpuRequest, memRequest)
 	cpuLimit, memLimit = a.checkResourceBounds(cpuLimit, memLimit)
 
-	//mapping to p3 instance types.
-	if run.Gpu != nil && *run.Gpu > 0 {
-		cpuLimit = *run.Gpu * 7500
-		cpuRequest = *run.Gpu * 6000
-		memLimit = *run.Gpu * 60000
-		memRequest = *run.Gpu * 50000
-	}
 	return cpuLimit, memLimit, cpuRequest, memRequest
 }
 
@@ -401,5 +442,16 @@ func (a *eksAdapter) sanitizeEnvVar(key string) string {
 	}
 	// Environment variable names can't contain spaces.
 	key = strings.Replace(key, " ", "", -1)
+	return key
+}
+
+func (a *eksAdapter) sanitizeLabel(key string) string {
+	key = strings.TrimSpace(key)
+	key = regexp.MustCompile(`[^-a-z0-9A-Z_.]+`).ReplaceAllString(key, "_")
+	key = strings.TrimPrefix(key, "_")
+	key = strings.ToLower(key)
+	if len(key) > 63 {
+		key = key[:63]
+	}
 	return key
 }

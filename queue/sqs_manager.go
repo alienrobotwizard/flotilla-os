@@ -9,6 +9,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/stitchfix/flotilla-os/config"
 	"github.com/stitchfix/flotilla-os/state"
+	awstrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/aws/aws-sdk-go/aws"
 )
 
 //
@@ -47,24 +48,24 @@ func (qm *SQSManager) Initialize(conf config.Config, engine string) error {
 	}
 
 	qm.retentionSeconds = "604800"
-	if conf.IsSet("queue.retention_seconds") {
-		qm.retentionSeconds = conf.GetString("queue.retention_seconds")
+	if conf.IsSet("queue_retention_seconds") {
+		qm.retentionSeconds = conf.GetString("queue_retention_seconds")
 	}
 
 	qm.visibilityTimeout = "45"
-	if conf.IsSet("queue.process_time") {
-		qm.visibilityTimeout = conf.GetString("queue.process_time")
+	if conf.IsSet("queue_process_time") {
+		qm.visibilityTimeout = conf.GetString("queue_process_time")
 	}
 
-	if !conf.IsSet("queue.namespace") {
-		return errors.Errorf("SQSManager needs [queue.namespace] set in config")
+	if !conf.IsSet("queue_namespace") {
+		return errors.Errorf("SQSManager needs [queue_namespace] set in config")
 	}
 
-	qm.namespace = conf.GetString("queue.namespace")
+	qm.namespace = conf.GetString("queue_namespace")
 	flotillaMode := conf.GetString("flotilla_mode")
 	if flotillaMode != "test" {
-		sess := session.Must(session.NewSession(&aws.Config{
-			Region: aws.String(conf.GetString("aws_default_region"))}))
+		sess := awstrace.WrapSession(session.Must(session.NewSession(&aws.Config{
+			Region: aws.String(conf.GetString("aws_default_region"))})))
 
 		qm.qc = sqs.New(sess)
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/stitchfix/flotilla-os/config"
 	"github.com/stitchfix/flotilla-os/state"
+	awstrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/aws/aws-sdk-go/aws"
 	"io"
 	"log"
 	"net/http"
@@ -53,9 +54,9 @@ func (lc *EKSS3LogsClient) Name() string {
 // Initialize sets up the EKSS3LogsClient
 //
 func (lc *EKSS3LogsClient) Initialize(conf config.Config) error {
-	confLogOptions := conf.GetStringMapString("eks.log.driver.options")
+	//confLogOptions := conf.GetStringMapString("eks_log_driver_options")
 
-	awsRegion := confLogOptions["awslogs-region"]
+	awsRegion := conf.GetString("eks_log_driver_options_awslogs_region")
 	if len(awsRegion) == 0 {
 		awsRegion = conf.GetString("aws_default_region")
 	}
@@ -67,22 +68,22 @@ func (lc *EKSS3LogsClient) Initialize(conf config.Config) error {
 
 	flotillaMode := conf.GetString("flotilla_mode")
 	if flotillaMode != "test" {
-		sess := session.Must(session.NewSession(&aws.Config{
-			Region: aws.String(awsRegion)}))
-
+		sess := awstrace.WrapSession(session.Must(session.NewSession(&aws.Config{
+			Region: aws.String(awsRegion)})))
+		sess = awstrace.WrapSession(sess)
 		lc.s3Client = s3.New(sess, aws.NewConfig().WithRegion(awsRegion))
 	}
-	lc.emrS3LogsBucket = conf.GetString("emr.log.bucket")
-	lc.emrS3LogsBasePath = conf.GetString("emr.log.base_path")
-	s3BucketName := confLogOptions["s3_bucket_name"]
+	lc.emrS3LogsBucket = conf.GetString("emr_log_bucket")
+	lc.emrS3LogsBasePath = conf.GetString("emr_log_base_path")
+	s3BucketName := conf.GetString("eks_log_driver_options_s3_bucket_name")
 
 	if len(s3BucketName) == 0 {
 		return errors.Errorf(
-			"EKSS3LogsClient needs [eks.log.driver.options.s3_bucket_name] set in config")
+			"EKSS3LogsClient needs [eks_log_driver_options_s3_bucket_name] set in config")
 	}
 	lc.s3Bucket = s3BucketName
 
-	s3BucketRootDir := confLogOptions["s3_bucket_root_dir"]
+	s3BucketRootDir := conf.GetString("eks_log_driver_options_s3_bucket_root_dir")
 
 	if len(s3BucketRootDir) == 0 {
 		return errors.Errorf(
@@ -101,24 +102,34 @@ func (lc *EKSS3LogsClient) emrLogsToMessageString(run state.Run, lastSeen *strin
 		return "", aws.String(""), errors.Errorf("No logs")
 	}
 
-	result, err := lc.s3Client.ListObjects(&s3.ListObjectsInput{
-		Bucket: aws.String(lc.emrS3LogsBucket),
-		Prefix: aws.String(s3DirName),
-	})
-
-	if err != nil || result == nil || result.Contents == nil || len(result.Contents) == 0 {
-		return "", aws.String(""), errors.Errorf("Problem fetching logs")
+	params := &s3.ListObjectsV2Input{
+		Bucket:  aws.String(lc.emrS3LogsBucket),
+		Prefix:  aws.String(s3DirName),
+		MaxKeys: aws.Int64(1000),
 	}
 
-	var key *string
+	pageNum := 0
 	lastModified := &time.Time{}
+	var key *string
 
-	for _, content := range result.Contents {
-		if strings.Contains(*content.Key, *role) && strings.Contains(*content.Key, *facility) && lastModified.Before(*content.LastModified) {
-			key = content.Key
-			lastModified = content.LastModified
-		}
-	}
+	err = lc.s3Client.ListObjectsV2Pages(params,
+		func(result *s3.ListObjectsV2Output, lastPage bool) bool {
+			pageNum++
+			if result != nil {
+				for _, content := range result.Contents {
+					if strings.Contains(*content.Key, *role) && strings.Contains(*content.Key, *facility) && lastModified.Before(*content.LastModified) {
+						if content != nil && *content.Size < int64(10000000) {
+							key = content.Key
+							lastModified = content.LastModified
+						}
+					}
+				}
+			}
+			if lastPage {
+				return false
+			}
+			return pageNum <= 10
+		})
 
 	if key == nil {
 		lc.logger.Println(fmt.Sprintf("run=%s emr logging key not found for role=%s facility=%s", run.RunID, *role, *facility))
@@ -132,12 +143,13 @@ func (lc *EKSS3LogsClient) emrLogsToMessageString(run state.Run, lastSeen *strin
 			startPosition = parsed
 		}
 	}
+
 	s3Obj, err := lc.s3Client.GetObject(&s3.GetObjectInput{
 		Bucket: aws.String(lc.emrS3LogsBucket),
 		Key:    aws.String(*key),
 	})
 
-	if s3Obj != nil && err == nil {
+	if s3Obj != nil && err == nil && *s3Obj.ContentLength < int64(10000000) {
 		defer s3Obj.Body.Close()
 		gr, err := gzip.NewReader(s3Obj.Body)
 		if err != nil {
@@ -167,8 +179,7 @@ func (lc *EKSS3LogsClient) emrLogsToMessageString(run state.Run, lastSeen *strin
 }
 
 func (lc *EKSS3LogsClient) emrDriverLogsPath(run state.Run) (string, error) {
-	if run.SparkExtension.SparkAppId != nil &&
-		run.SparkExtension.EMRJobId != nil &&
+	if run.SparkExtension.EMRJobId != nil &&
 		run.SparkExtension.VirtualClusterId != nil {
 		return fmt.Sprintf("%s/%s/jobs/%s/",
 			lc.emrS3LogsBasePath,
@@ -224,9 +235,9 @@ func (lc *EKSS3LogsClient) LogsText(executable state.Executable, run state.Run, 
 //
 func (lc *EKSS3LogsClient) getS3Object(run state.Run) (*s3.GetObjectOutput, error) {
 	//Pod isn't there yet - dont return a 404
-	if run.PodName == nil {
-		return nil, errors.New("no pod associated with the run.")
-	}
+	//if run.PodName == nil {
+	//	return nil, errors.New("no pod associated with the run.")
+	//}
 	s3DirName := lc.toS3DirName(run)
 
 	// Get list of S3 objects in the run_id folder.
@@ -248,8 +259,10 @@ func (lc *EKSS3LogsClient) getS3Object(run state.Run) (*s3.GetObjectOutput, erro
 	//Find latest log file (could have multiple log files per pod - due to pod retries)
 	for _, content := range result.Contents {
 		if strings.Contains(*content.Key, run.RunID) && lastModified.Before(*content.LastModified) {
-			key = content.Key
-			lastModified = content.LastModified
+			if content != nil && *content.Size < int64(10000000) {
+				key = content.Key
+				lastModified = content.LastModified
+			}
 		}
 	}
 	if key != nil {

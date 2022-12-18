@@ -3,6 +3,7 @@ package worker
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/go-redis/redis"
 	"github.com/pkg/errors"
 	"github.com/stitchfix/flotilla-os/clients/metrics"
@@ -31,6 +32,7 @@ type statusWorker struct {
 	workerId                 string
 	exceptionExtractorClient *http.Client
 	exceptionExtractorUrl    string
+	emrEngine                engine.Engine
 }
 
 func (sw *statusWorker) Initialize(conf config.Config, sm state.Manager, eksEngine engine.Engine, emrEngine engine.Engine, log flotillaLog.Logger, pollInterval time.Duration, qm queue.Manager) error {
@@ -41,11 +43,12 @@ func (sw *statusWorker) Initialize(conf config.Config, sm state.Manager, eksEngi
 	sw.log = log
 	sw.workerId = fmt.Sprintf("workerid:%d", rand.Int())
 	sw.engine = &state.EKSEngine
-	if sw.conf.IsSet("eks.exception_extractor_url") {
+	sw.emrEngine = emrEngine
+	if sw.conf.IsSet("eks_exception_extractor_url") {
 		sw.exceptionExtractorClient = &http.Client{
 			Timeout: time.Second * 5,
 		}
-		sw.exceptionExtractorUrl = sw.conf.GetString("eks.exception_extractor_url")
+		sw.exceptionExtractorUrl = sw.conf.GetString("eks_exception_extractor_url")
 	}
 	sw.setupRedisClient(conf)
 	_ = sw.log.Log("message", "initialized a status worker")
@@ -74,7 +77,49 @@ func (sw *statusWorker) Run() error {
 		default:
 			if *sw.engine == state.EKSEngine {
 				sw.runOnceEKS()
+				sw.runTimeouts()
 				time.Sleep(sw.pollInterval)
+			}
+		}
+	}
+}
+
+func (sw *statusWorker) runTimeouts() {
+	rl, err := sw.sm.ListRuns(1000, 0, "started_at", "asc", map[string][]string{
+		"queued_at_since": {
+			time.Now().AddDate(0, 0, -300).Format(time.RFC3339),
+		},
+		"task_type": {state.DefaultTaskType},
+		"status":    {state.StatusNeedsRetry, state.StatusRunning, state.StatusQueued, state.StatusPending},
+	}, nil, state.Engines)
+
+	if err != nil {
+		_ = sw.log.Log("message", "unable to receive runs", "error", fmt.Sprintf("%+v", err))
+		return
+	}
+	runs := rl.Runs
+	sw.processTimeouts(runs)
+}
+
+func (sw *statusWorker) processTimeouts(runs []state.Run) {
+	for _, run := range runs {
+		if run.StartedAt != nil && run.ActiveDeadlineSeconds != nil {
+			runningDuration := time.Now().Sub(*run.StartedAt)
+			if int64(runningDuration.Seconds()) > *run.ActiveDeadlineSeconds {
+				if run.Engine != nil && *run.Engine == state.EKSSparkEngine {
+					_ = sw.emrEngine.Terminate(run)
+				} else {
+					_ = sw.ee.Terminate(run)
+				}
+
+				exitCode := int64(1)
+				finishedAt := time.Now()
+				_, _ = sw.sm.UpdateRun(run.RunID, state.Run{
+					Status:     state.StatusStopped,
+					ExitReason: aws.String(fmt.Sprintf("JobRun exceeded specified timeout of %v seconds", *run.ActiveDeadlineSeconds)),
+					ExitCode:   &exitCode,
+					FinishedAt: &finishedAt,
+				})
 			}
 		}
 	}
@@ -83,7 +128,7 @@ func (sw *statusWorker) Run() error {
 func (sw *statusWorker) runOnceEKS() {
 	rl, err := sw.sm.ListRuns(1000, 0, "started_at", "asc", map[string][]string{
 		"queued_at_since": {
-			time.Now().AddDate(0, 0, -30).Format(time.RFC3339),
+			time.Now().AddDate(0, 0, -300).Format(time.RFC3339),
 		},
 		"task_type": {state.DefaultTaskType},
 		"status":    {state.StatusNeedsRetry, state.StatusRunning, state.StatusQueued, state.StatusPending},
@@ -109,7 +154,6 @@ func (sw *statusWorker) processEKSRuns(runs []state.Run) {
 	_ = metrics.Increment(metrics.StatusWorkerLockedRuns, []string{sw.workerId}, float64(len(lockedRuns)))
 	for _, run := range lockedRuns {
 		start := time.Now()
-		_ = sw.log.Log("message", "launching go process eks run", "run", run.RunID)
 		go sw.processEKSRun(run)
 		_ = metrics.Timing(metrics.StatusWorkerProcessEKSRun, time.Since(start), []string{sw.workerId}, 1)
 	}
@@ -131,18 +175,15 @@ func (sw *statusWorker) acquireLock(run state.Run, purpose string, expiration ti
 }
 
 func (sw *statusWorker) processEKSRun(run state.Run) {
-	_ = sw.log.Log("message", "process eks run", "run", run.RunID)
 	reloadRun, err := sw.sm.GetRun(run.RunID)
 	if err == nil && reloadRun.Status == state.StatusStopped {
 		// Run was updated by another worker process.
 		return
 	}
 	start := time.Now()
-	updatedRunWithMetrics, _ := sw.ee.FetchPodMetrics(run)
-	_ = metrics.Timing(metrics.StatusWorkerFetchPodMetrics, time.Since(start), []string{sw.workerId}, 1)
 
 	start = time.Now()
-	updatedRun, err := sw.ee.FetchUpdateStatus(updatedRunWithMetrics)
+	updatedRun, err := sw.ee.FetchUpdateStatus(reloadRun)
 	if err != nil {
 		_ = sw.log.Log("message", "fetch update status", "run", run.RunID, "error", fmt.Sprintf("%+v", err))
 	}

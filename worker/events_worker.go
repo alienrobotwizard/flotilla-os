@@ -10,6 +10,7 @@ import (
 	flotillaLog "github.com/stitchfix/flotilla-os/log"
 	"github.com/stitchfix/flotilla-os/queue"
 	"github.com/stitchfix/flotilla-os/state"
+	kubernetestrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/k8s.io/client-go/kubernetes"
 	"gopkg.in/tomb.v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -31,6 +32,7 @@ type eventsWorker struct {
 	s3Client          *s3.S3
 	kClient           kubernetes.Clientset
 	emrHistoryServer  string
+	emrAppServer      string
 	emrMetricsServer  string
 	eksMetricsServer  string
 	emrMaxPodEvents   int
@@ -46,15 +48,16 @@ func (ew *eventsWorker) Initialize(conf config.Config, sm state.Manager, eksEngi
 	ew.log = log
 	ew.eksEngine = eksEngine
 	ew.emrEngine = emrEngine
-	eventsQueue, err := ew.qm.QurlFor(conf.GetString("eks.events_queue"), false)
-	emrJobStatusQueue, err := ew.qm.QurlFor(conf.GetString("emr.job_status_queue"), false)
-	ew.emrHistoryServer = conf.GetString("emr.history_server_uri")
-	ew.emrMetricsServer = conf.GetString("emr.metrics_server_uri")
-	ew.eksMetricsServer = conf.GetString("eks.metrics_server_uri")
-	if conf.IsSet("emr.max_attempt_count") {
-		ew.emrMaxPodEvents = conf.GetInt("emr.max_pod_events")
+	eventsQueue, err := ew.qm.QurlFor(conf.GetString("eks_events_queue"), false)
+	emrJobStatusQueue, err := ew.qm.QurlFor(conf.GetString("emr_job_status_queue"), false)
+	ew.emrHistoryServer = conf.GetString("emr_history_server_uri")
+	ew.emrAppServer = conf.GetString("emr_app_server_uri")
+	ew.emrMetricsServer = conf.GetString("emr_metrics_server_uri")
+	ew.eksMetricsServer = conf.GetString("eks_metrics_server_uri")
+	if conf.IsSet("emr_max_attempt_count") {
+		ew.emrMaxPodEvents = conf.GetInt("emr_max_pod_events")
 	} else {
-		ew.emrMaxPodEvents = 2000
+		ew.emrMaxPodEvents = 20000
 	}
 
 	if err != nil {
@@ -65,10 +68,12 @@ func (ew *eventsWorker) Initialize(conf config.Config, sm state.Manager, eksEngi
 	ew.emrJobStatusQueue = emrJobStatusQueue
 	_ = ew.qm.Initialize(ew.conf, "eks")
 
-	clusterName := conf.GetStringSlice("eks.cluster_override")[0]
+	clusterName := conf.GetStringSlice("eks_cluster_override")[0]
 
-	filename := fmt.Sprintf("%s/%s", conf.GetString("eks.kubeconfig_basepath"), clusterName)
+	filename := fmt.Sprintf("%s/%s", conf.GetString("eks_kubeconfig_basepath"), clusterName)
 	clientConf, err := clientcmd.BuildConfigFromFlags("", filename)
+	clientConf.WrapTransport = kubernetestrace.WrapRoundTripper
+
 	if err != nil {
 		_ = ew.log.Log("message", "error initializing-eksEngine-clusters", "error", fmt.Sprintf("%+v", err))
 		return err
@@ -127,10 +132,13 @@ func (ew *eventsWorker) processEventEMR(emrEvent state.EmrEvent) {
 			run.ExitCode = aws.Int64(0)
 			run.Status = state.StatusStopped
 			run.FinishedAt = &timestamp
-			if run.StartedAt == nil {
+			if run.StartedAt == nil || run.StartedAt.After(*run.FinishedAt) {
 				run.StartedAt = run.QueuedAt
 			}
 			run.ExitReason = emrEvent.Detail.StateDetails
+			// var events state.PodEvents
+			// Pod Events are verbose and should be only stored for failed or running jobs.
+			// run.PodEvents = &events
 		case "RUNNING":
 			run.Status = state.StatusRunning
 			run.StartedAt = &timestamp
@@ -138,10 +146,34 @@ func (ew *eventsWorker) processEventEMR(emrEvent state.EmrEvent) {
 			run.ExitCode = aws.Int64(-1)
 			run.Status = state.StatusStopped
 			run.FinishedAt = &timestamp
-			if run.StartedAt == nil {
+			if run.StartedAt == nil || run.StartedAt.After(*run.FinishedAt) {
 				run.StartedAt = run.QueuedAt
 			}
-			run.ExitReason = emrEvent.Detail.FailureReason
+
+			run.ExitReason = aws.String("Job failed, please look at Driver Init and/or Driver Stdout logs.")
+
+			if emrEvent.Detail != nil {
+				if emrEvent.Detail.StateDetails != nil && !strings.Contains(*emrEvent.Detail.StateDetails, "JobRun failed. Please refer logs uploaded") {
+					exitReason := strings.Replace(*emrEvent.Detail.StateDetails, "Please refer logs uploaded to S3/CloudWatch based on your monitoring configuration.", "", -1)
+					run.ExitReason = aws.String(exitReason)
+				} else {
+					if emrEvent.Detail.FailureReason != nil && !strings.Contains(*emrEvent.Detail.FailureReason, "USER_ERROR") {
+						exitReason := strings.Replace(*emrEvent.Detail.FailureReason, "Please refer logs uploaded to S3/CloudWatch based on your monitoring configuration.", "", -1)
+						run.ExitReason = aws.String(exitReason)
+					}
+				}
+			}
+
+			if run.SparkExtension.DriverOOM != nil && *run.SparkExtension.DriverOOM == true {
+				run.ExitReason = aws.String("Driver OOMKilled, retry with more driver memory.")
+				run.ExitCode = aws.Int64(137)
+			}
+
+			if run.SparkExtension.ExecutorOOM != nil && *run.SparkExtension.ExecutorOOM == true {
+				run.ExitReason = aws.String("Executor OOMKilled, retry with more executor memory.")
+				run.ExitCode = aws.Int64(137)
+			}
+
 		case "SUBMITTED":
 			run.Status = state.StatusPending
 		}
@@ -166,6 +198,10 @@ func (ew *eventsWorker) processEMRPodEvents(kubernetesEvent state.KubernetesEven
 		pod, err := ew.kClient.CoreV1().Pods(kubernetesEvent.InvolvedObject.Namespace).Get(kubernetesEvent.InvolvedObject.Name, metav1.GetOptions{})
 		var emrJobId *string = nil
 		var sparkAppId *string = nil
+		var driverServiceName *string = nil
+		var executorOOM *bool = nil
+		var driverOOM *bool = nil
+
 		if err == nil {
 			for k, v := range pod.Labels {
 				if emrJobId == nil && strings.Compare(k, "emr-containers.amazonaws.com/job.id") == 0 {
@@ -176,6 +212,35 @@ func (ew *eventsWorker) processEMRPodEvents(kubernetesEvent state.KubernetesEven
 				}
 				if sparkAppId != nil && emrJobId != nil {
 					break
+				}
+			}
+		}
+		if pod != nil {
+			for _, container := range pod.Spec.Containers {
+				for _, v := range container.Env {
+					if v.Name == "SPARK_DRIVER_URL" {
+						pat := regexp.MustCompile(`.*@(.*-svc).*`)
+						matches := pat.FindAllStringSubmatch(v.Value, -1)
+						for _, match := range matches {
+							if len(match) == 2 {
+								driverServiceName = &match[1]
+							}
+						}
+					}
+				}
+			}
+
+			if pod.Status.ContainerStatuses != nil && len(pod.Status.ContainerStatuses) > 0 {
+				for _, containerStatus := range pod.Status.ContainerStatuses {
+					if containerStatus.State.Terminated != nil {
+						if containerStatus.State.Terminated.ExitCode == 137 {
+							if strings.Contains(containerStatus.Name, "driver") {
+								driverOOM = aws.Bool(true)
+							} else {
+								executorOOM = aws.Bool(true)
+							}
+						}
+					}
 				}
 			}
 		}
@@ -205,12 +270,24 @@ func (ew *eventsWorker) processEMRPodEvents(kubernetesEvent state.KubernetesEven
 				}
 				run.PodEvents = &events
 
+				if executorOOM != nil && *executorOOM == true {
+					run.SparkExtension.ExecutorOOM = executorOOM
+				}
+				if driverOOM != nil && *driverOOM == true {
+					run.SparkExtension.DriverOOM = driverOOM
+				}
+
 				if sparkAppId != nil {
-					sparkHistoryUri := fmt.Sprintf("%s/%s/jobs", ew.emrHistoryServer, *sparkAppId)
+					sparkHistoryUri := fmt.Sprintf("%s/%s/jobs/", ew.emrHistoryServer, *sparkAppId)
+
 					run.SparkExtension.SparkAppId = sparkAppId
 					run.SparkExtension.HistoryUri = &sparkHistoryUri
-
+					if driverServiceName != nil {
+						appUri := fmt.Sprintf("%s/job/%s", ew.emrAppServer, *driverServiceName)
+						run.SparkExtension.AppUri = &appUri
+					}
 				}
+
 				ew.setEMRMetricsUri(&run)
 
 				run, err = ew.sm.UpdateRun(run.RunID, run)
@@ -280,8 +357,9 @@ func (ew *eventsWorker) setEKSMetricsUri(run *state.Run) {
 
 func (ew *eventsWorker) processEvent(kubernetesEvent state.KubernetesEvent) {
 	runId := kubernetesEvent.InvolvedObject.Labels.JobName
-	if !strings.HasPrefix(runId, "eks") {
+	if strings.HasPrefix(runId, "eks-spark") || len(runId) == 0 {
 		ew.processEMRPodEvents(kubernetesEvent)
+		return
 	}
 
 	layout := "2020-08-31T17:27:50Z"

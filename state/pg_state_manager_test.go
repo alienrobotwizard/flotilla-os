@@ -54,9 +54,9 @@ func insertDefinitions(db *sqlx.DB) {
 	taskSQL := `
     INSERT INTO task (
       run_id, definition_id, cluster_name, alias, image, exit_code, status,
-      started_at, finished_at, instance_id, instance_dns_name, group_name, env, engine
+      started_at, finished_at, instance_id, instance_dns_name, group_name, env, engine, "user"
     ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'eks'
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'eks', 'foo'
     )
     `
 
@@ -607,9 +607,16 @@ func TestSQLStateManager_UpdateRun(t *testing.T) {
 	u2 := Run{
 		Status: StatusNeedsRetry,
 	}
-	sm.UpdateRun("run3", u)
+	_, e := sm.UpdateRun("run3", u)
+	if e != nil {
+		t.Errorf("Error while updating %v", e)
+	}
 
-	r, _ := sm.GetRun("run3")
+	r, e := sm.GetRun("run3")
+
+	if e != nil {
+		t.Errorf("Error in GetRun %v", e)
+	}
 	if *r.ExitCode != ec {
 		t.Errorf("Expected update to set exit code to %v but was %v", ec, *r.ExitCode)
 	}

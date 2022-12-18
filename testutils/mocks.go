@@ -13,10 +13,8 @@ import (
 	"github.com/stitchfix/flotilla-os/state"
 )
 
-//
 // ImplementsAllTheThings defines a struct which implements many of the interfaces
 // to facilitate easier testing
-//
 type ImplementsAllTheThings struct {
 	T                       *testing.T
 	Calls                   []string                    // Collects calls
@@ -77,6 +75,11 @@ func (iatt *ImplementsAllTheThings) ListFailingNodes() (state.NodeList, error) {
 func (iatt *ImplementsAllTheThings) GetPodReAttemptRate() (float32, error) {
 	iatt.Calls = append(iatt.Calls, "GetPodReAttemptRate")
 	return 1.0, nil
+}
+
+func (iatt *ImplementsAllTheThings) GetNodeLifecycle(executableID string, commandHash string) (string, error) {
+	iatt.Calls = append(iatt.Calls, "GetNodeLifecycle")
+	return "spot", nil
 }
 
 func (iatt *ImplementsAllTheThings) GetTaskHistoricalRuntime(executableID string, runId string) (float32, error) {
@@ -163,12 +166,12 @@ func (iatt *ImplementsAllTheThings) GetRun(runID string) (state.Run, error) {
 	return r, err
 }
 
-func (iatt *ImplementsAllTheThings) GetRunByEMRJobId(emrJobId string) (state.Run, error){
+func (iatt *ImplementsAllTheThings) GetRunByEMRJobId(emrJobId string) (state.Run, error) {
 	iatt.Calls = append(iatt.Calls, "GetRunByEMRJobId")
 	var err error
 	r, ok := iatt.Runs[emrJobId]
 	if !ok {
-		err = fmt.Errorf("No run %s", emrJobId )
+		err = fmt.Errorf("No run %s", emrJobId)
 	}
 	return r, err
 }
@@ -183,6 +186,20 @@ func (iatt *ImplementsAllTheThings) CreateRun(r state.Run) error {
 func (iatt *ImplementsAllTheThings) EstimateRunResources(executableID string, command string) (state.TaskResources, error) {
 	iatt.Calls = append(iatt.Calls, "EstimateRunResources")
 	return state.TaskResources{}, nil
+}
+
+func (iatt *ImplementsAllTheThings) EstimateExecutorCount(executableID string, commandHash string) (int64, error) {
+	iatt.Calls = append(iatt.Calls, "EstimateExecutorCount")
+	return 0, nil
+}
+
+func (iatt *ImplementsAllTheThings) ExecutorOOM(executableID string, commandHash string) (bool, error) {
+	iatt.Calls = append(iatt.Calls, "ExecutorOOM")
+	return false, nil
+}
+func (iatt *ImplementsAllTheThings) DriverOOM(executableID string, commandHash string) (bool, error) {
+	iatt.Calls = append(iatt.Calls, "DriverOOM")
+	return false, nil
 }
 
 // UpdateRun - StateManager
@@ -216,6 +233,11 @@ func (iatt *ImplementsAllTheThings) initWorkerTable(c config.Config) error {
 func (iatt *ImplementsAllTheThings) ListWorkers(engine string) (state.WorkersList, error) {
 	iatt.Calls = append(iatt.Calls, "ListWorkers")
 	return state.WorkersList{Total: len(iatt.Workers), Workers: iatt.Workers}, nil
+}
+
+func (iatt *ImplementsAllTheThings) CheckIdempotenceKey(idempotenceKey string) (string, error) {
+	iatt.Calls = append(iatt.Calls, "CheckIdempotenceKey")
+	return "42", nil
 }
 
 // GetWorker - StateManager
@@ -372,7 +394,7 @@ func (iatt *ImplementsAllTheThings) PollRuns() ([]engine.RunReceipt, error) {
 	return r, nil
 }
 
-//PollStatus - Execution Engine
+// PollStatus - Execution Engine
 func (iatt *ImplementsAllTheThings) PollStatus() (engine.RunReceipt, error) {
 	iatt.Calls = append(iatt.Calls, "PollStatus")
 	if len(iatt.StatusUpdatesAsRuns) == 0 {

@@ -25,6 +25,9 @@ type Manager interface {
 
 	ListRuns(limit int, offset int, sortBy string, order string, filters map[string][]string, envFilters map[string]string, engines []string) (RunList, error)
 	EstimateRunResources(executableID string, commandHash string) (TaskResources, error)
+	EstimateExecutorCount(executableID string, commandHash string) (int64, error)
+	ExecutorOOM(executableID string, commandHash string) (bool, error)
+	DriverOOM(executableID string, commandHash string) (bool, error)
 
 	GetRun(runID string) (Run, error)
 	CreateRun(r Run) error
@@ -49,7 +52,9 @@ type Manager interface {
 
 	ListFailingNodes() (NodeList, error)
 	GetPodReAttemptRate() (float32, error)
+	GetNodeLifecycle(executableID string, commandHash string) (string, error)
 	GetTaskHistoricalRuntime(executableID string, runId string) (float32, error)
+	CheckIdempotenceKey(idempotenceKey string) (string, error)
 
 	GetRunByEMRJobId(string) (Run, error)
 }

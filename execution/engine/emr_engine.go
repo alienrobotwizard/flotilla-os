@@ -4,6 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	utils "github.com/stitchfix/flotilla-os/execution"
+
+	"regexp"
+	"strings"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/emrcontainers"
@@ -14,19 +19,17 @@ import (
 	flotillaLog "github.com/stitchfix/flotilla-os/log"
 	"github.com/stitchfix/flotilla-os/queue"
 	"github.com/stitchfix/flotilla-os/state"
+	awstrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/aws/aws-sdk-go/aws"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	_ "k8s.io/apimachinery/pkg/apis/meta/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8sJson "k8s.io/apimachinery/pkg/runtime/serializer/json"
 	_ "k8s.io/client-go/kubernetes/scheme"
-	"regexp"
-	"strings"
 )
 
-//
 // EMRExecutionEngine submits runs to EMR-EKS.
-//
 type EMRExecutionEngine struct {
 	sqsQueueManager     queue.Manager
 	log                 flotillaLog.Logger
@@ -36,6 +39,7 @@ type EMRExecutionEngine struct {
 	emrJobSA            string
 	emrVirtualCluster   string
 	emrContainersClient *emrcontainers.EMRContainers
+	schedulerName       string
 	s3Client            *s3.S3
 	awsRegion           string
 	s3LogsBucket        string
@@ -46,25 +50,25 @@ type EMRExecutionEngine struct {
 	serializer          *k8sJson.Serializer
 }
 
-//
 // Initialize configures the EMRExecutionEngine and initializes internal clients
-//
 func (emr *EMRExecutionEngine) Initialize(conf config.Config) error {
 
-	emr.emrVirtualCluster = conf.GetString("emr.virtual_cluster")
-	emr.emrJobQueue = conf.GetString("emr.job_queue")
-	emr.emrJobNamespace = conf.GetString("emr.job_namespace")
-	emr.emrJobRoleArn = conf.GetString("emr.job_role_arn")
-	emr.awsRegion = conf.GetString("emr.aws_region")
-	emr.s3LogsBucket = conf.GetString("emr.log.bucket")
-	emr.s3LogsBasePath = conf.GetString("emr.log.base_path")
-	emr.s3EventLogPath = conf.GetString("emr.log.event_log_path")
-	emr.s3ManifestBucket = conf.GetString("emr.manifest.bucket")
-	emr.s3ManifestBasePath = conf.GetString("emr.manifest.base_path")
-	emr.emrJobSA = conf.GetString("eks.service_account")
+	emr.emrVirtualCluster = conf.GetString("emr_virtual_cluster")
+	emr.emrJobQueue = conf.GetString("emr_job_queue")
+	emr.emrJobNamespace = conf.GetString("emr_job_namespace")
+	emr.emrJobRoleArn = conf.GetString("emr_job_role_arn")
+	emr.awsRegion = conf.GetString("emr_aws_region")
+	emr.s3LogsBucket = conf.GetString("emr_log_bucket")
+	emr.s3LogsBasePath = conf.GetString("emr_log_base_path")
+	emr.s3EventLogPath = conf.GetString("emr_log_event_log_path")
+	emr.s3ManifestBucket = conf.GetString("emr_manifest_bucket")
+	emr.s3ManifestBasePath = conf.GetString("emr_manifest_base_path")
+	emr.emrJobSA = conf.GetString("eks_service_account")
+	emr.schedulerName = conf.GetString("eks_scheduler_name")
 
 	awsConfig := &aws.Config{Region: aws.String(emr.awsRegion)}
 	sess := session.Must(session.NewSessionWithOptions(session.Options{Config: *awsConfig}))
+	sess = awstrace.WrapSession(sess)
 	emr.s3Client = s3.New(sess, aws.NewConfig().WithRegion(emr.awsRegion))
 	emr.emrContainersClient = emrcontainers.New(sess, aws.NewConfig().WithRegion(emr.awsRegion))
 
@@ -80,6 +84,16 @@ func (emr *EMRExecutionEngine) Initialize(conf config.Config) error {
 }
 
 func (emr *EMRExecutionEngine) Execute(executable state.Executable, run state.Run, manager state.Manager) (state.Run, bool, error) {
+	run = emr.estimateExecutorCount(run, manager)
+	run = emr.estimateMemoryResources(run, manager)
+
+	if run.CommandHash != nil && run.NodeLifecycle != nil && *run.NodeLifecycle == state.SpotLifecycle {
+		nodeType, err := manager.GetNodeLifecycle(run.DefinitionID, *run.CommandHash)
+		if err == nil && nodeType == state.OndemandLifecycle {
+			run.NodeLifecycle = &state.OndemandLifecycle
+		}
+	}
+
 	startJobRunInput := emr.generateEMRStartJobRunInput(executable, run, manager)
 	emrJobManifest := aws.String(fmt.Sprintf("%s/%s/%s.json", emr.s3ManifestBasePath, run.RunID, "start-job-run-input"))
 	obj, err := json.MarshalIndent(startJobRunInput, "", "\t")
@@ -99,6 +113,7 @@ func (emr *EMRExecutionEngine) Execute(executable state.Executable, run state.Ru
 		run.ExitCode = aws.Int64(-1)
 		run.StartedAt = run.QueuedAt
 		run.FinishedAt = run.QueuedAt
+		run.Status = state.StatusStopped
 		_ = emr.log.Log("EMR job submission error", "error", err.Error())
 		_ = metrics.Increment(metrics.EngineEKSExecute, []string{string(metrics.StatusFailure)}, 1)
 		return run, false, err
@@ -107,22 +122,37 @@ func (emr *EMRExecutionEngine) Execute(executable state.Executable, run state.Ru
 }
 
 func (emr *EMRExecutionEngine) generateApplicationConf(executable state.Executable, run state.Run, manager state.Manager) []*emrcontainers.Configuration {
-	properties := map[string]*string{
+	sparkDefaults := map[string]*string{
 		"spark.kubernetes.driver.podTemplateFile":   emr.driverPodTemplate(executable, run, manager),
 		"spark.kubernetes.executor.podTemplateFile": emr.executorPodTemplate(executable, run, manager),
 		"spark.kubernetes.container.image":          &run.Image,
-		"spark.eventLog.dir":                        aws.String(fmt.Sprintf("s3a://%s/%s", emr.s3LogsBucket, emr.s3EventLogPath)),
-		"spark.history.fs.logDirectory":             aws.String(fmt.Sprintf("s3a://%s/%s", emr.s3LogsBucket, emr.s3EventLogPath)),
+		"spark.eventLog.dir":                        aws.String(fmt.Sprintf("s3://%s/%s", emr.s3LogsBucket, emr.s3EventLogPath)),
+		"spark.history.fs.logDirectory":             aws.String(fmt.Sprintf("s3://%s/%s", emr.s3LogsBucket, emr.s3EventLogPath)),
 		"spark.eventLog.enabled":                    aws.String(fmt.Sprintf("true")),
+		"spark.default.parallelism":                 aws.String("256"),
+		"spark.sql.shuffle.partitions":              aws.String("256"),
 	}
+	hiveDefaults := map[string]*string{}
 
 	for _, k := range run.SparkExtension.ApplicationConf {
-		properties[*k.Name] = k.Value
+		sparkDefaults[*k.Name] = k.Value
 	}
+	if run.SparkExtension.HiveConf != nil {
+		for _, k := range run.SparkExtension.HiveConf {
+			if k.Name != nil && k.Value != nil {
+				hiveDefaults[*k.Name] = k.Value
+			}
+		}
+	}
+
 	return []*emrcontainers.Configuration{
 		{
 			Classification: aws.String("spark-defaults"),
-			Properties:     properties,
+			Properties:     sparkDefaults,
+		},
+		{
+			Classification: aws.String("spark-hive-site"),
+			Properties:     hiveDefaults,
 		},
 	}
 }
@@ -150,7 +180,6 @@ func (emr *EMRExecutionEngine) generateEMRStartJobRunInput(executable state.Exec
 		Name:             &run.RunID,
 		ReleaseLabel:     run.SparkExtension.EMRReleaseLabel,
 		VirtualClusterId: &emr.emrVirtualCluster,
-		Tags:             emr.generateTags(run),
 	}
 	return startJobRunInput
 }
@@ -170,12 +199,29 @@ func (emr *EMRExecutionEngine) generateTags(run state.Run) map[string]*string {
 }
 
 func (emr *EMRExecutionEngine) driverPodTemplate(executable state.Executable, run state.Run, manager state.Manager) *string {
+	// Override driver pods to always be on ondemand nodetypes.
+	run.NodeLifecycle = &state.OndemandLifecycle
+	workingDir := "/var/lib/app"
+	if run.SparkExtension != nil && run.SparkExtension.SparkSubmitJobDriver != nil && run.SparkExtension.SparkSubmitJobDriver.WorkingDir != nil {
+		workingDir = *run.SparkExtension.SparkSubmitJobDriver.WorkingDir
+	}
+
+	labels := utils.GetLabels(run)
+
+	//if run.Description != nil {
+	//	info := strings.Split(*run.Description, "/")
+	//
+	//	for i, s := range info {
+	//		labels[fmt.Sprintf("info%v", i)] = emr.sanitizeLabel(s)
+	//	}
+	//}
 	pod := v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
 				"cluster-autoscaler.kubernetes.io/safe-to-evict": "false",
-				"prometheus.io/scrape": "true",
-				"flotilla-run-id": run.RunID},
+				"prometheus.io/scrape":                           "true",
+				"flotilla-run-id":                                run.RunID},
+			Labels: labels,
 		},
 		Spec: v1.PodSpec{
 			Volumes: []v1.Volume{{
@@ -184,6 +230,7 @@ func (emr *EMRExecutionEngine) driverPodTemplate(executable state.Executable, ru
 					EmptyDir: &(v1.EmptyDirVolumeSource{}),
 				},
 			}},
+			SchedulerName: emr.schedulerName,
 			Containers: []v1.Container{
 				{
 					Name: "spark-kubernetes-driver",
@@ -194,6 +241,7 @@ func (emr *EMRExecutionEngine) driverPodTemplate(executable state.Executable, ru
 							MountPath: "/var/lib/app",
 						},
 					},
+					WorkingDir: workingDir,
 				},
 			},
 			InitContainers: []v1.Container{{
@@ -209,7 +257,7 @@ func (emr *EMRExecutionEngine) driverPodTemplate(executable state.Executable, ru
 				Command: emr.constructCmdSlice(run.SparkExtension.DriverInitCommand),
 			}},
 			RestartPolicy: v1.RestartPolicyNever,
-			Affinity:      emr.constructAffinity(executable, run, manager),
+			Affinity:      emr.constructAffinity(executable, run, manager, true),
 		},
 	}
 
@@ -218,21 +266,39 @@ func (emr *EMRExecutionEngine) driverPodTemplate(executable state.Executable, ru
 }
 
 func (emr *EMRExecutionEngine) executorPodTemplate(executable state.Executable, run state.Run, manager state.Manager) *string {
+	workingDir := "/var/lib/app"
+	if run.SparkExtension != nil && run.SparkExtension.SparkSubmitJobDriver != nil && run.SparkExtension.SparkSubmitJobDriver.WorkingDir != nil {
+		workingDir = *run.SparkExtension.SparkSubmitJobDriver.WorkingDir
+	}
+
+	labels := utils.GetLabels(run)
+
+	//if run.Description != nil {
+	//	info := strings.Split(*run.Description, "/")
+	//
+	//	for i, s := range info {
+	//		labels[fmt.Sprintf("info%v", i)] = emr.sanitizeLabel(s)
+	//	}
+	//}
+
 	pod := v1.Pod{
 		Status: v1.PodStatus{},
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
-				"cluster-autoscaler.kubernetes.io/safe-to-evict": "false",
-				"prometheus.io/scrape": "true",
-				"flotilla-run-id": run.RunID},
+				"cluster-autoscaler.kubernetes.io/safe-to-evict": emr.constructEviction(run, manager),
+				"prometheus.io/scrape":                           "true",
+				"flotilla-run-id":                                run.RunID},
+			Labels: labels,
 		},
 		Spec: v1.PodSpec{
+			TerminationGracePeriodSeconds: aws.Int64(90),
 			Volumes: []v1.Volume{{
 				Name: "shared-lib-volume",
 				VolumeSource: v1.VolumeSource{
 					EmptyDir: &(v1.EmptyDirVolumeSource{}),
 				},
 			}},
+			SchedulerName: emr.schedulerName,
 			Containers: []v1.Container{
 				{
 					Name: "spark-kubernetes-executor",
@@ -243,6 +309,7 @@ func (emr *EMRExecutionEngine) executorPodTemplate(executable state.Executable, 
 							MountPath: "/var/lib/app",
 						},
 					},
+					WorkingDir: workingDir,
 				},
 			},
 			InitContainers: []v1.Container{{
@@ -258,9 +325,10 @@ func (emr *EMRExecutionEngine) executorPodTemplate(executable state.Executable, 
 				Command: emr.constructCmdSlice(run.SparkExtension.ExecutorInitCommand),
 			}},
 			RestartPolicy: v1.RestartPolicyNever,
-			Affinity:      emr.constructAffinity(executable, run, manager),
+			Affinity:      emr.constructAffinity(executable, run, manager, false),
 		},
 	}
+
 	key := aws.String(fmt.Sprintf("%s/%s/%s.yaml", emr.s3ManifestBasePath, run.RunID, "executor-template"))
 	return emr.writeK8ObjToS3(&pod, key)
 }
@@ -304,18 +372,37 @@ func (emr *EMRExecutionEngine) writeStringToS3(key *string, body []byte) *string
 	return aws.String(fmt.Sprintf("s3://%s/%s", emr.s3ManifestBucket, *key))
 }
 
-func (emr *EMRExecutionEngine) constructAffinity(executable state.Executable, run state.Run, manager state.Manager) *v1.Affinity {
+func (emr *EMRExecutionEngine) constructEviction(run state.Run, manager state.Manager) string {
+	if run.NodeLifecycle != nil && *run.NodeLifecycle == state.OndemandLifecycle {
+		return "false"
+	}
+	if run.CommandHash != nil {
+		nodeType, err := manager.GetNodeLifecycle(run.DefinitionID, *run.CommandHash)
+		if err == nil && nodeType == state.OndemandLifecycle {
+			return "false"
+		}
+	}
+	return "true"
+}
+
+func (emr *EMRExecutionEngine) constructAffinity(executable state.Executable, run state.Run, manager state.Manager, driver bool) *v1.Affinity {
 	affinity := &v1.Affinity{}
 	executableResources := executable.GetExecutableResources()
 	var requiredMatch []v1.NodeSelectorRequirement
 
-	gpuNodeTypes := []string{"p3.2xlarge", "p3.8xlarge", "p3.16xlarge"}
+	gpuNodeTypes := state.GPUNodeTypes
+	arch := []string{"amd64"}
+	if run.Arch != nil && *run.Arch == "arm64" {
+		arch = []string{"arm64"}
+	}
 
 	var nodeLifecycle []string
-	if run.NodeLifecycle != nil && *run.NodeLifecycle == state.OndemandLifecycle {
-		nodeLifecycle = append(nodeLifecycle, "normal")
+	nodePreference := "spot"
+	if (run.NodeLifecycle != nil && *run.NodeLifecycle == state.OndemandLifecycle) || driver {
+		nodeLifecycle = append(nodeLifecycle, "on-demand")
+		nodePreference = "on-demand"
 	} else {
-		nodeLifecycle = append(nodeLifecycle, "spot")
+		nodeLifecycle = append(nodeLifecycle, "spot", "on-demand")
 	}
 
 	if (executableResources.Gpu == nil || *executableResources.Gpu <= 0) && (run.Gpu == nil || *run.Gpu <= 0) {
@@ -324,15 +411,12 @@ func (emr *EMRExecutionEngine) constructAffinity(executable state.Executable, ru
 			Operator: v1.NodeSelectorOpNotIn,
 			Values:   gpuNodeTypes,
 		})
+	}
 
-		nodeList, err := manager.ListFailingNodes()
-
-		if err == nil && len(nodeList) > 0 {
-			requiredMatch = append(requiredMatch, v1.NodeSelectorRequirement{
-				Key:      "kubernetes.io/hostname",
-				Operator: v1.NodeSelectorOpNotIn,
-				Values:   nodeList,
-			})
+	if run.CommandHash != nil {
+		nodeType, err := manager.GetNodeLifecycle(run.DefinitionID, *run.CommandHash)
+		if err == nil && nodeType == state.OndemandLifecycle {
+			nodeLifecycle = []string{"on-demand"}
 		}
 	}
 
@@ -342,6 +426,11 @@ func (emr *EMRExecutionEngine) constructAffinity(executable state.Executable, ru
 		Values:   nodeLifecycle,
 	})
 
+	requiredMatch = append(requiredMatch, v1.NodeSelectorRequirement{
+		Key:      "kubernetes.io/arch",
+		Operator: v1.NodeSelectorOpIn,
+		Values:   arch,
+	})
 	affinity = &v1.Affinity{
 		NodeAffinity: &v1.NodeAffinity{
 			RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
@@ -351,22 +440,99 @@ func (emr *EMRExecutionEngine) constructAffinity(executable state.Executable, ru
 					},
 				},
 			},
+			PreferredDuringSchedulingIgnoredDuringExecution: []v1.PreferredSchedulingTerm{{
+				Weight: 50,
+				Preference: v1.NodeSelectorTerm{
+					MatchExpressions: []v1.NodeSelectorRequirement{{
+						Key:      "node.kubernetes.io/lifecycle",
+						Operator: v1.NodeSelectorOpIn,
+						Values:   []string{nodePreference},
+					}},
+				},
+			}},
+		},
+		PodAffinity: &v1.PodAffinity{
+			PreferredDuringSchedulingIgnoredDuringExecution: []v1.WeightedPodAffinityTerm{
+				{
+					Weight: 40,
+					PodAffinityTerm: v1.PodAffinityTerm{
+						LabelSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{
+								"flotilla-run-id": run.RunID},
+						},
+						TopologyKey: "topology.kubernetes.io/zone",
+					},
+				},
+			},
 		},
 	}
 	return affinity
 }
 
+func (emr *EMRExecutionEngine) estimateExecutorCount(run state.Run, manager state.Manager) state.Run {
+	return run
+}
+
+func setResourceSuffix(value string) string {
+	if strings.Contains(value, "g") || strings.Contains(value, "m") {
+		return strings.ToUpper(value)
+	}
+	if strings.Contains(value, "K") {
+		return strings.ToLower(value)
+	}
+	return value
+}
+
+func (emr *EMRExecutionEngine) estimateMemoryResources(run state.Run, manager state.Manager) state.Run {
+	if run.CommandHash == nil {
+		return run
+	}
+	executorOOM, _ := manager.ExecutorOOM(run.DefinitionID, *run.CommandHash)
+	driverOOM, _ := manager.DriverOOM(run.DefinitionID, *run.CommandHash)
+
+	var sparkSubmitConf []state.Conf
+	for _, k := range run.SparkExtension.SparkSubmitJobDriver.SparkSubmitConf {
+		if *k.Name == "spark.executor.memory" && k.Value != nil {
+			// 1.25x executor memory - OOM in the last 30 days
+			if executorOOM {
+				quantity := resource.MustParse(setResourceSuffix(*k.Value))
+				quantity.Set(int64(float64(quantity.Value()) * 1.25))
+				k.Value = aws.String(strings.ToLower(quantity.String()))
+			} else {
+				quantity := resource.MustParse(setResourceSuffix(*k.Value))
+				minVal := resource.MustParse("1G")
+				if quantity.MilliValue() > minVal.MilliValue() {
+					quantity.Set(int64(float64(quantity.Value()) * 1.0))
+					k.Value = aws.String(strings.ToLower(quantity.String()))
+				}
+			}
+		}
+		if driverOOM {
+			//Bump up driver by 3x, jvm memory strings
+			if *k.Name == "spark.driver.memory" && k.Value != nil {
+				quantity := resource.MustParse(setResourceSuffix(*k.Value))
+				quantity.Set(quantity.Value() * 3)
+				k.Value = aws.String(strings.ToLower(quantity.String()))
+			}
+		}
+		sparkSubmitConf = append(sparkSubmitConf, state.Conf{Name: k.Name, Value: k.Value})
+	}
+	run.SparkExtension.SparkSubmitJobDriver.SparkSubmitConf = sparkSubmitConf
+	return run
+}
+
 func (emr *EMRExecutionEngine) sparkSubmitParams(run state.Run) *string {
 	var buffer bytes.Buffer
 	buffer.WriteString(fmt.Sprintf(" --name %s", run.RunID))
-	lifecycle := state.SpotLifecycle
-	if run.NodeLifecycle != nil && *run.NodeLifecycle == state.OndemandLifecycle {
-		lifecycle = "normal"
-	}
 
-	buffer.WriteString(fmt.Sprintf(" --conf spark.kubernetes.node.selector.node.kubernetes.io/lifecycle=%s", lifecycle))
 	for _, k := range run.SparkExtension.SparkSubmitJobDriver.SparkSubmitConf {
 		buffer.WriteString(fmt.Sprintf(" --conf %s=%s", *k.Name, *k.Value))
+	}
+
+	buffer.WriteString(fmt.Sprintf(" --conf %s=%s", "spark.kubernetes.executor.podNamePrefix", run.RunID))
+
+	if run.SparkExtension.SparkSubmitJobDriver.Class != nil {
+		buffer.WriteString(fmt.Sprintf(" --class %s", *run.SparkExtension.SparkSubmitJobDriver.Class))
 	}
 
 	if len(run.SparkExtension.SparkSubmitJobDriver.Files) > 0 {
@@ -388,6 +554,10 @@ func (emr *EMRExecutionEngine) sparkSubmitParams(run state.Run) *string {
 }
 
 func (emr *EMRExecutionEngine) Terminate(run state.Run) error {
+	if run.Status == state.StatusStopped {
+		return errors.New("Run is already in a stopped state.")
+	}
+
 	cancelJobRunInput := emrcontainers.CancelJobRunInput{
 		Id:               run.SparkExtension.EMRJobId,
 		VirtualClusterId: run.SparkExtension.VirtualClusterId,
@@ -543,6 +713,6 @@ func (emr *EMRExecutionEngine) constructCmdSlice(command *string) []string {
 	}
 	bashCmd := "bash"
 	optLogin := "-l"
-	optStr := "-cex"
+	optStr := "-ce"
 	return []string{bashCmd, optLogin, optStr, cmdString}
 }

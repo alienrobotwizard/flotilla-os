@@ -14,6 +14,8 @@ import (
 	"gopkg.in/tomb.v2"
 	"strings"
 	"time"
+
+		awstrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/aws/aws-sdk-go/aws"
 )
 
 type cloudtrailWorker struct {
@@ -37,8 +39,8 @@ func (ctw *cloudtrailWorker) Initialize(conf config.Config, sm state.Manager, ek
 	ctw.queue = conf.GetString("cloudtrail_queue")
 	_ = ctw.qm.Initialize(ctw.conf, "eks")
 
-	awsRegion := conf.GetString("eks.manifest.storage.options.region")
-	sess := session.Must(session.NewSession(&aws.Config{Region: aws.String(awsRegion)}))
+	awsRegion := conf.GetString("eks_manifest_storage_options_region")
+	sess := awstrace.WrapSession(session.Must(session.NewSession(&aws.Config{Region: aws.String(awsRegion)})))
 	ctw.s3Client = s3.New(sess, aws.NewConfig().WithRegion(awsRegion))
 
 	return nil
@@ -103,7 +105,7 @@ func (ctw *cloudtrailWorker) processS3Keys(cloudTrailS3File state.CloudTrailS3Fi
 }
 
 func (ctw *cloudtrailWorker) processCloudTrailNotifications(ctn state.CloudTrailNotifications) {
-	sa := ctw.conf.GetString("eks.service_account")
+	sa := ctw.conf.GetString("eks_service_account")
 	runIdRecordMap := make(map[string][]state.Record)
 	for _, record := range ctn.Records {
 		if strings.Contains(record.UserIdentity.Arn, sa) && strings.Contains(record.UserIdentity.Arn, "eks-") {

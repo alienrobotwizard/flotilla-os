@@ -17,6 +17,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	awstrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/aws/aws-sdk-go/aws"
 )
 
 //
@@ -45,9 +46,9 @@ func (lc *EKSCloudWatchLogsClient) Name() string {
 // Initialize sets up the EKSCloudWatchLogsClient
 //
 func (lc *EKSCloudWatchLogsClient) Initialize(conf config.Config) error {
-	confLogOptions := conf.GetStringMapString("eks.log.driver.options")
+	//confLogOptions := conf.GetStringMapString("eks_log_driver_options")
 
-	awsRegion := confLogOptions["awslogs-region"]
+	awsRegion := conf.GetString("eks_log_driver_options_awslogs_region")
 	if len(awsRegion) == 0 {
 		awsRegion = conf.GetString("aws_default_region")
 	}
@@ -60,25 +61,22 @@ func (lc *EKSCloudWatchLogsClient) Initialize(conf config.Config) error {
 	//
 	// log.namespace in conf takes precedence over log.driver.options.awslogs-group
 	//
-	lc.logNamespace = conf.GetString("eks.log.namespace")
-	if _, ok := confLogOptions["awslogs-group"]; ok && len(lc.logNamespace) == 0 {
-		lc.logNamespace = confLogOptions["awslogs-group"]
-	}
+	lc.logNamespace = conf.GetString("eks_log_namespace")
 
 	if len(lc.logNamespace) == 0 {
 		return errors.Errorf(
 			"EKSCloudWatchLogsClient needs one of [eks.log.driver.options.awslogs-group] or [eks.log.namespace] set in config")
 	}
 
-	lc.logRetentionInDays = int64(conf.GetInt("eks.log.retention_days"))
+	lc.logRetentionInDays = int64(conf.GetInt("eks_log_retention_days"))
 	if lc.logRetentionInDays == 0 {
 		lc.logRetentionInDays = int64(30)
 	}
 
 	flotillaMode := conf.GetString("flotilla_mode")
 	if flotillaMode != "test" {
-		sess := session.Must(session.NewSession(&aws.Config{
-			Region: aws.String(awsRegion)}))
+		sess := awstrace.WrapSession(session.Must(session.NewSession(&aws.Config{
+			Region: aws.String(awsRegion)})))
 
 		lc.logsClient = cloudwatchlogs.New(sess)
 	}

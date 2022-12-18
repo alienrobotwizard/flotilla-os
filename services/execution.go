@@ -17,11 +17,9 @@ import (
 	"github.com/stitchfix/flotilla-os/state"
 )
 
-//
 // ExecutionService interacts with the state manager and queue manager to queue runs, and perform
 // CRUD operations on them
 // * Acts as an intermediary layer between state and the execution engine
-//
 type ExecutionService interface {
 	CreateDefinitionRunByDefinitionID(definitionID string, req *state.DefinitionExecutionRequest) (state.Run, error)
 	CreateDefinitionRunByAlias(alias string, req *state.DefinitionExecutionRequest) (state.Run, error)
@@ -43,29 +41,26 @@ type ExecutionService interface {
 }
 
 type executionService struct {
-	stateManager             state.Manager
-	eksClusterClient         cluster.Client
-	eksExecutionEngine       engine.Engine
-	emrExecutionEngine       engine.Engine
-	reservedEnv              map[string]func(run state.Run) string
-	eksClusterOverride       []string
-	eksOverridePercent       int
-	clusterOndemandWhitelist []string
-	checkImageValidity       bool
-	baseUri                  string
-	spotReAttemptOverride    float32
-	eksSpotOverride          bool
-	spotThresholdMinutes     float64
-	terminateJobChannel      chan state.TerminateJob
+	stateManager          state.Manager
+	eksClusterClient      cluster.Client
+	eksExecutionEngine    engine.Engine
+	emrExecutionEngine    engine.Engine
+	reservedEnv           map[string]func(run state.Run) string
+	eksClusterOverride    string
+	eksGPUClusterOverride string
+	checkImageValidity    bool
+	baseUri               string
+	spotReAttemptOverride float32
+	eksSpotOverride       bool
+	spotThresholdMinutes  float64
+	terminateJobChannel   chan state.TerminateJob
 }
 
 func (es *executionService) GetEvents(run state.Run) (state.PodEventList, error) {
 	return es.eksExecutionEngine.GetEvents(run)
 }
 
-//
 // NewExecutionService configures and returns an ExecutionService
-//
 func NewExecutionService(conf config.Config, eksExecutionEngine engine.Engine, sm state.Manager, eksClusterClient cluster.Client, emrExecutionEngine engine.Engine) (ExecutionService, error) {
 	es := executionService{
 		stateManager:       sm,
@@ -82,9 +77,8 @@ func NewExecutionService(conf config.Config, eksExecutionEngine engine.Engine, s
 		ownerKey = "FLOTILLA_RUN_OWNER_ID"
 	}
 
-	es.eksClusterOverride = conf.GetStringSlice("eks.cluster_override")
-	es.eksOverridePercent = conf.GetInt("eks.cluster_override_percent")
-	es.clusterOndemandWhitelist = conf.GetStringSlice("eks.cluster_ondemand_whitelist")
+	es.eksClusterOverride = conf.GetString("eks_cluster_override")
+	es.eksGPUClusterOverride = conf.GetString("eks_gpu_cluster_override")
 	if conf.IsSet("check_image_validity") {
 		es.checkImageValidity = conf.GetBool("check_image_validity")
 	} else {
@@ -95,21 +89,21 @@ func NewExecutionService(conf config.Config, eksExecutionEngine engine.Engine, s
 		es.baseUri = conf.GetString("base_uri")
 	}
 
-	if conf.IsSet("eks.spot_reattempt_override") {
-		es.spotReAttemptOverride = float32(conf.GetFloat64("eks.spot_reattempt_override"))
+	if conf.IsSet("eks_spot_reattempt_override") {
+		es.spotReAttemptOverride = float32(conf.GetFloat64("eks_spot_reattempt_override"))
 	} else {
 		// defaults to 5% override.
 		es.spotReAttemptOverride = float32(0.05)
 	}
 
-	if conf.IsSet("eks.spot_override") {
-		es.eksSpotOverride = conf.GetBool("eks.spot_override")
+	if conf.IsSet("eks_spot_override") {
+		es.eksSpotOverride = conf.GetBool("eks_spot_override")
 	} else {
 		es.eksSpotOverride = false
 	}
 
-	if conf.IsSet("eks.spot_threshold_minutes") {
-		es.spotThresholdMinutes = conf.GetFloat64("eks.spot_threshold_minutes")
+	if conf.IsSet("eks_spot_threshold_minutes") {
+		es.spotThresholdMinutes = conf.GetFloat64("eks_spot_threshold_minutes")
 	} else {
 		es.spotThresholdMinutes = 30.0
 	}
@@ -133,10 +127,8 @@ func NewExecutionService(conf config.Config, eksExecutionEngine engine.Engine, s
 	return &es, nil
 }
 
-//
 // ReservedVariables returns the list of reserved run environment variable
 // names
-//
 func (es *executionService) ReservedVariables() []string {
 	var keys []string
 	for k := range es.reservedEnv {
@@ -145,9 +137,7 @@ func (es *executionService) ReservedVariables() []string {
 	return keys
 }
 
-//
 // Create constructs and queues a new Run on the cluster specified.
-//
 func (es *executionService) CreateDefinitionRunByDefinitionID(definitionID string, req *state.DefinitionExecutionRequest) (state.Run, error) {
 	// Ensure definition exists
 	definition, err := es.stateManager.GetDefinition(definitionID)
@@ -158,9 +148,7 @@ func (es *executionService) CreateDefinitionRunByDefinitionID(definitionID strin
 	return es.createFromDefinition(definition, req)
 }
 
-//
 // Create constructs and queues a new Run on the cluster specified, based on an alias
-//
 func (es *executionService) CreateDefinitionRunByAlias(alias string, req *state.DefinitionExecutionRequest) (state.Run, error) {
 	// Ensure definition exists
 	definition, err := es.stateManager.GetDefinitionByAlias(alias)
@@ -178,7 +166,11 @@ func (es *executionService) createFromDefinition(definition state.Definition, re
 	)
 	fields := req.GetExecutionRequestCommon()
 	rand.Seed(time.Now().Unix())
-	fields.ClusterName = es.eksClusterOverride[rand.Intn(len(es.eksClusterOverride))]
+	fields.ClusterName = es.eksClusterOverride
+	if fields.Gpu != nil && *fields.Gpu > 0 {
+		fields.ClusterName = es.eksGPUClusterOverride
+	}
+	run.User = req.OwnerID
 	es.sanitizeExecutionRequestCommonFields(fields)
 
 	// Construct run object with StatusQueued and new UUID4 run id
@@ -199,8 +191,24 @@ func (es *executionService) constructRunFromDefinition(definition state.Definiti
 
 	run.DefinitionID = definition.DefinitionID
 	run.Alias = definition.Alias
+	queuedAt := time.Now()
+	run.QueuedAt = &queuedAt
 	run.GroupName = definition.GroupName
+	if req.Description != nil {
+		run.Description = req.Description
+	}
 
+	if req.IdempotenceKey != nil {
+		run.IdempotenceKey = req.IdempotenceKey
+	}
+
+	if req.Arch != nil {
+		run.Arch = req.Arch
+	}
+
+	if req.Labels != nil {
+		run.Labels = *req.Labels
+	}
 	return run, nil
 }
 
@@ -254,6 +262,10 @@ func (es *executionService) constructBaseRunFromExecutable(executable state.Exec
 			return run, errors.New("spark_extension can't be nil, when using eks-spark engine type")
 		}
 		fields.SparkExtension = req.GetExecutionRequestCommon().SparkExtension
+		reAttemptRate, _ := es.stateManager.GetPodReAttemptRate()
+		if reAttemptRate >= es.spotReAttemptOverride {
+			fields.NodeLifecycle = &state.OndemandLifecycle
+		}
 	}
 
 	if fields.NodeLifecycle == nil {
@@ -278,6 +290,11 @@ func (es *executionService) constructBaseRunFromExecutable(executable state.Exec
 		ActiveDeadlineSeconds: fields.ActiveDeadlineSeconds,
 		TaskType:              state.DefaultTaskType,
 		SparkExtension:        fields.SparkExtension,
+		CommandHash:           fields.CommandHash,
+	}
+
+	if fields.Labels != nil {
+		run.Labels = *fields.Labels
 	}
 
 	runEnv := es.constructEnviron(run, fields.Env)
@@ -307,10 +324,8 @@ func (es *executionService) constructEnviron(run state.Run, env *state.EnvList) 
 	return state.EnvList(runEnv)
 }
 
-//
 // List returns a list of Runs
 // * validates definition_id and status filters
-//
 func (es *executionService) List(
 	limit int,
 	offset int,
@@ -342,16 +357,12 @@ func (es *executionService) List(
 	return es.stateManager.ListRuns(limit, offset, sortField, sortOrder, filters, envFilters, []string{state.EKSEngine, state.EKSSparkEngine})
 }
 
-//
 // Get returns the run with the given runID
-//
 func (es *executionService) Get(runID string) (state.Run, error) {
 	return es.stateManager.GetRun(runID)
 }
 
-//
 // UpdateStatus is for supporting some legacy runs that still manually update their status
-//
 func (es *executionService) UpdateStatus(runID string, status string, exitCode *int64, runExceptions *state.RunExceptions, exitReason *string) error {
 	if !state.IsValidStatus(status) {
 		return exceptions.MalformedInput{ErrorString: fmt.Sprintf("status %s is invalid", status)}
@@ -439,45 +450,37 @@ func (es *executionService) terminateWorker(jobChan <-chan state.TerminateJob) {
 			} else {
 				err = es.eksExecutionEngine.Terminate(run)
 			}
-			if err == nil || run.Status == state.StatusQueued {
-				exitReason := "Task terminated by user"
-				if len(userInfo.Email) > 0 {
-					exitReason = fmt.Sprintf("Task terminated by - %s", userInfo.Email)
-				}
-
-				exitCode := int64(1)
-				finishedAt := time.Now()
-				_, err = es.stateManager.UpdateRun(run.RunID, state.Run{
-					Status:     state.StatusStopped,
-					ExitReason: &exitReason,
-					ExitCode:   &exitCode,
-					FinishedAt: &finishedAt,
-				})
-				break
+			exitReason := "Task terminated by user"
+			if len(userInfo.Email) > 0 {
+				exitReason = fmt.Sprintf("Task terminated by - %s", userInfo.Email)
 			}
+
+			exitCode := int64(1)
+			finishedAt := time.Now()
+			_, err = es.stateManager.UpdateRun(run.RunID, state.Run{
+				Status:     state.StatusStopped,
+				ExitReason: &exitReason,
+				ExitCode:   &exitCode,
+				FinishedAt: &finishedAt,
+			})
 			break
 		}
 		break
 	}
 }
 
-//
 // Terminate stops the run with the given runID
-//
 func (es *executionService) Terminate(runID string, userInfo state.UserInfo) error {
 	es.terminateJobChannel <- state.TerminateJob{RunID: runID, UserInfo: userInfo}
 	go es.terminateWorker(es.terminateJobChannel)
 	return nil
 }
 
-//
 // ListClusters returns a list of all execution clusters available
-//
 func (es *executionService) ListClusters() ([]string, error) {
 	return []string{}, nil
 }
 
-//
 // sanitizeExecutionRequestCommonFields does what its name implies - sanitizes
 func (es *executionService) sanitizeExecutionRequestCommonFields(fields *state.ExecutionRequestCommon) {
 	if fields.Engine == nil {
@@ -497,12 +500,20 @@ func (es *executionService) sanitizeExecutionRequestCommonFields(fields *state.E
 	}
 }
 
-//
 // createAndEnqueueRun creates a run object in the DB, enqueues it, then
 // updates the db's run object with a new `queued_at` field.
-//
 func (es *executionService) createAndEnqueueRun(run state.Run) (state.Run, error) {
 	var err error
+	if run.IdempotenceKey != nil {
+		priorRunId, err := es.stateManager.CheckIdempotenceKey(*run.IdempotenceKey)
+		if err == nil && len(priorRunId) > 0 {
+			priorRun, err := es.Get(priorRunId)
+			if err == nil {
+				return priorRun, nil
+			}
+		}
+	}
+
 	// Save run to source of state - it is *CRITICAL* to do this
 	// -before- queuing to avoid processing unsaved runs
 	if err = es.stateManager.CreateRun(run); err != nil {
@@ -547,9 +558,7 @@ func (es *executionService) CreateTemplateRunByTemplateName(templateName string,
 		errors.New(fmt.Sprintf("invalid template name or version, template_name: %s, template_version: %s", templateName, templateVersion))
 }
 
-//
 // Create constructs and queues a new Run on the cluster specified.
-//
 func (es *executionService) CreateTemplateRunByTemplateID(templateID string, req *state.TemplateExecutionRequest) (state.Run, error) {
 	// Ensure template exists
 	template, err := es.stateManager.GetTemplateByID(templateID)
