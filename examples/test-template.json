@@ -1,0 +1,7 @@
+{
+  "template_name": "cupcake",
+  "command_template": "echo hello world",
+  "image": "library/ubuntu",
+  "memory": 512,
+  "schema": {"name": "val"}
+}
