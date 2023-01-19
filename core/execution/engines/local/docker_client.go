@@ -2,10 +2,14 @@ package local
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"github.com/alienrobotwizard/flotilla-os/core/config"
+	"github.com/alienrobotwizard/flotilla-os/core/exceptions"
 	"github.com/alienrobotwizard/flotilla-os/core/execution/engines"
 	"github.com/alienrobotwizard/flotilla-os/core/state/models"
+	"github.com/docker/distribution/reference"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -23,23 +27,63 @@ type DockerClient interface {
 	Info(ctx context.Context, run models.Run) (types.ContainerJSON, error)
 }
 
+var authsKey = "engine.local.auths"
+
 type dockerClient struct {
-	cli client.APIClient
+	cli   client.APIClient
+	auths map[string]types.AuthConfig
 }
 
 func NewDockerClient(c *config.Config) (DockerClient, error) {
-	// TODO - config should provide multiple paths for docker host and auth
+	dc := &dockerClient{
+		auths: make(map[string]types.AuthConfig),
+	}
+
+	if c.IsSet(authsKey) {
+		auths := c.GetStringMap(authsKey)
+		for registryHost := range auths {
+			var authConfig types.AuthConfig
+			userKey := fmt.Sprintf("%s.%s.user", authsKey, registryHost)
+			passKey := fmt.Sprintf("%s.%s.password", authsKey, registryHost)
+			if c.IsSet(userKey) {
+				authConfig.Username = c.GetString(userKey)
+			} else {
+				return nil, exceptions.ErrBadConfig
+			}
+
+			if c.IsSet(passKey) {
+				authConfig.Password = c.GetString(passKey)
+			} else {
+				return nil, exceptions.ErrBadConfig
+			}
+
+			dc.auths[registryHost] = authConfig
+		}
+	}
+
 	if cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation()); err != nil {
 		return nil, err
 	} else {
-		return &dockerClient{
-			cli: cli,
-		}, nil
+		dc.cli = cli
+		return dc, nil
 	}
 }
 
 func (dc *dockerClient) Execute(ctx context.Context, run models.Run) (containerID string, err error) {
-	reader, err := dc.cli.ImagePull(ctx, run.Image, types.ImagePullOptions{})
+	pullOpts := types.ImagePullOptions{}
+
+	ref, err := reference.ParseNamed(run.Image)
+	if err != nil {
+		return "", err
+	}
+	registryHost := reference.Domain(ref)
+	if registryHost != "" {
+		auth := dc.auths[registryHost]
+		encodedJSON, _ := json.Marshal(auth)
+		pullOpts.RegistryAuth = base64.URLEncoding.EncodeToString(encodedJSON)
+	}
+
+	reader, err := dc.cli.ImagePull(ctx, run.Image, pullOpts)
 	if err != nil {
 		return
 	}

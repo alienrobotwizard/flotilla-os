@@ -206,7 +206,9 @@ func (m *SQLManager) applyEnvFilters(q *gorm.DB, filters map[string]string) *gor
 }
 
 func (m *SQLManager) ListWorkers(ctx context.Context, engine string) (models.WorkersList, error) {
-	var lr models.WorkersList
+	lr := models.WorkersList{
+		Total: 0,
+	}
 
 	q := m.db.WithContext(ctx).Model(&models.Worker{}).Where("engine = ?", engine)
 	q.Count(&lr.Total)

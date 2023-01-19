@@ -11,6 +11,15 @@ services:
       POSTGRES_USER: flotilla
       POSTGRES_DB: flotilla
       POSTGRES_PASSWORD: flotilla
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: 'rabbitmq'
+    environment:
+      RABBITMQ_DEFAULT_USER: flotilla
+      RABBITMQ_DEFAULT_PASS: flotilla
+    ports:
+      - 5672:5672
+      - 15672:15672
 
 volumes:
   dbdata:

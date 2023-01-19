@@ -67,6 +67,7 @@ func (sw *SubmitWorker) runOnce(ctx context.Context) {
 			}
 			launched, err := sw.engine.Execute(ctx, run)
 			if err != nil {
+				sw.logger.Printf("Got error: [%s] attempting to launch run [%s]\n", err.Error(), run.RunID)
 				if !errors.Is(err, exceptions.ErrRetryable) {
 					launched.Status = models.StatusStopped
 					launched.RunExceptions = &models.RunExceptions{err.Error()}
